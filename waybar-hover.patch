@@ -150,7 +150,7 @@ index 86abb43d..f7e6f633 100644
      }
 diff --git a/src/modules/ring.cpp b/src/modules/ring.cpp
 new file mode 100644
-index 00000000..81049ea3
+index 00000000..fe159bd6
 --- /dev/null
 +++ b/src/modules/ring.cpp
 @@ -0,0 +1,325 @@
@@ -210,12 +210,13 @@ index 00000000..81049ea3
 +
 +bool RingCanvas::resolveColor(const std::string& name, double& r, double& g, double& b) {
 +  // First choice: a named color of the live theme (@define-color in
-+  // the loaded CSS — this is how the ring follows matugen).
-+  GdkColor gdk{};
-+  if (gtk_style_context_lookup_color(get_style_context()->gobj(), name.c_str(), &gdk)) {
-+    r = gdk.red / 65535.0;
-+    g = gdk.green / 65535.0;
-+    b = gdk.blue / 65535.0;
++  // the loaded CSS — this is how the ring follows matugen). GTK
++  // 3.24's lookup_color returns a GdkRGBA.
++  GdkRGBA named{};
++  if (gtk_style_context_lookup_color(get_style_context()->gobj(), name.c_str(), &named)) {
++    r = named.red;
++    g = named.green;
++    b = named.blue;
 +    return true;
 +  }
 +  // Fallback: a literal CSS color ("#e0b6ff", "rgb(...)", "red"...).
@@ -317,8 +318,7 @@ index 00000000..81049ea3
 +  event_box_.add(overlay_);
 +
 +  // A matugen re-theme swaps the palette under us: redraw with it.
-+  canvas_.signal_style_updated().connect(
-+      [this](const Glib::RefPtr<Gtk::Style>&) { canvas_.queue_draw(); });
++  canvas_.signal_style_updated().connect([this]() { canvas_.queue_draw(); });
 +
 +  if (config_["interval"].isNumeric()) {
 +    interval_ = std::chrono::seconds(static_cast<long>(config_["interval"].asDouble()));
