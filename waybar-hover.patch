@@ -1,9 +1,9 @@
 diff --git a/include/modules/ring.hpp b/include/modules/ring.hpp
 new file mode 100644
-index 00000000..ce757fdf
+index 00000000..ab1c0141
 --- /dev/null
 +++ b/include/modules/ring.hpp
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,86 @@
 +#pragma once
 +
 +#include <chrono>
@@ -35,6 +35,7 @@ index 00000000..ce757fdf
 +  void setGradient(std::vector<std::string> stops);
 +  void setThickness(double px);
 +  void setSmooth(bool smooth);
++  void setTrackAlpha(double alpha);
 +  void setIcon(const std::string& glyph, const std::string& color_spec);
 +
 + protected:
@@ -49,6 +50,7 @@ index 00000000..ce757fdf
 +  double target_ = 0.0;
 +  double shown_ = 0.0;
 +  double thickness_ = 3.0;
++  double track_alpha_ = 0.22;
 +  bool smooth_ = true;
 +  std::vector<std::string> stops_{"waybar-tertiary", "waybar-source", "waybar-primary-container"};
 +  std::string icon_glyph_;
@@ -156,10 +158,10 @@ index 86abb43d..f7e6f633 100644
      }
 diff --git a/src/modules/ring.cpp b/src/modules/ring.cpp
 new file mode 100644
-index 00000000..ac8c65c7
+index 00000000..1ed5bc77
 --- /dev/null
 +++ b/src/modules/ring.cpp
-@@ -0,0 +1,373 @@
+@@ -0,0 +1,381 @@
 +#include "modules/ring.hpp"
 +
 +#include <gtk/gtk.h>
@@ -184,6 +186,8 @@ index 00000000..ac8c65c7
 +void RingCanvas::setThickness(double px) { thickness_ = px; }
 +
 +void RingCanvas::setSmooth(bool smooth) { smooth_ = smooth; }
++
++void RingCanvas::setTrackAlpha(double alpha) { track_alpha_ = std::clamp(alpha, 0.0, 1.0); }
 +
 +void RingCanvas::setIcon(const std::string& glyph, const std::string& color_spec) {
 +  if (glyph != icon_glyph_ || color_spec != icon_color_) {
@@ -307,9 +311,12 @@ index 00000000..ac8c65c7
 +  cr->set_line_width(thickness_);
 +
 +  // Track: the full circle in the first gradient color, dimmed.
++  // Keeping the whole circle readable matters: the eye measures
++  // ring-to-ring distances, and a too-dim track makes the gaps
++  // between partial arcs look uneven.
 +  double r, g, b;
 +  if (resolveColor(stops_.front(), r, g, b)) {
-+    cr->set_source_rgba(r, g, b, 0.22);
++    cr->set_source_rgba(r, g, b, track_alpha_);
 +    cr->arc(cx, cy, radius, 0, 2 * M_PI);
 +    cr->stroke();
 +  }
@@ -338,6 +345,9 @@ index 00000000..ac8c65c7
 +  canvas_.set_size_request(size, size);
 +  if (config_["thickness"].isNumeric()) {
 +    canvas_.setThickness(config_["thickness"].asDouble());
++  }
++  if (config_["track-alpha"].isNumeric()) {
++    canvas_.setTrackAlpha(config_["track-alpha"].asDouble());
 +  }
 +  if (config_["gradient"].isArray()) {
 +    std::vector<std::string> stops;
