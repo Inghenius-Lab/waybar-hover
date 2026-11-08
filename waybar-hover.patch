@@ -818,7 +818,7 @@ index 00000000..82ced7c1
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..08ea762b
+index 00000000..fd3c4bd9
 --- /dev/null
 +++ b/src/modules/wave.cpp
 @@ -0,0 +1,376 @@
@@ -994,7 +994,7 @@ index 00000000..08ea762b
 +}
 +
 +void Wave::delayWorker() {
-+  if (!config["exec"].isString() && !config["exec-if"].isString()) {
++  if (!config_["exec"].isString() && !config_["exec-if"].isString()) {
 +    dp.emit();
 +    return;
 +  }
@@ -1016,16 +1016,16 @@ index 00000000..08ea762b
 +    }
 +
 +    bool can_update = true;
-+    if (config["exec-if"].isString()) {
-+      output_ = util::command::execNoRead(config["exec-if"].asString());
++    if (config_["exec-if"].isString()) {
++      output_ = util::command::execNoRead(config_["exec-if"].asString());
 +      if (output_.exit_code != 0) {
 +        can_update = false;
 +        dp.emit();
 +      }
 +    }
 +    if (can_update) {
-+      if (config["exec"].isString()) {
-+        output_ = util::command::exec(config["exec"].asString(), output_name_);
++      if (config_["exec"].isString()) {
++        output_ = util::command::exec(config_["exec"].asString(), output_name_);
 +      }
 +      dp.emit();
 +    }
@@ -1045,7 +1045,7 @@ index 00000000..08ea762b
 +}
 +
 +void Wave::startContinuousProcess(bool throw_on_failure) {
-+  const auto cmd = config["exec"].asString();
++  const auto cmd = config_["exec"].asString();
 +
 +  try {
 +    continuous_stream_->start(cmd);
@@ -1080,7 +1080,7 @@ index 00000000..08ea762b
 +
 +void Wave::scheduleContinuousRestart() {
 +  restart_connection_.disconnect();
-+  if (!config["restart-interval"].isNumeric() || config["restart-interval"].asDouble() <= 0) {
++  if (!config_["restart-interval"].isNumeric() || config_["restart-interval"].asDouble() <= 0) {
 +    return;
 +  }
 +
@@ -1089,22 +1089,22 @@ index 00000000..08ea762b
 +        startContinuousProcess(false);
 +        return false;
 +      },
-+      std::max(1U, static_cast<unsigned>(config["restart-interval"].asDouble() * 1000)));
++      std::max(1U, static_cast<unsigned>(config_["restart-interval"].asDouble() * 1000)));
 +}
 +
 +void Wave::waitingWorker() {
 +  thread_ = [this] {
 +    bool can_update = true;
-+    if (config["exec-if"].isString()) {
-+      output_ = util::command::execNoRead(config["exec-if"].asString());
++    if (config_["exec-if"].isString()) {
++      output_ = util::command::execNoRead(config_["exec-if"].asString());
 +      if (output_.exit_code != 0) {
 +        can_update = false;
 +        dp.emit();
 +      }
 +    }
 +    if (can_update) {
-+      if (config["exec"].isString()) {
-+        output_ = util::command::exec(config["exec"].asString(), output_name_);
++      if (config_["exec"].isString()) {
++        output_ = util::command::exec(config_["exec"].asString(), output_name_);
 +      }
 +      dp.emit();
 +    }
@@ -1114,14 +1114,14 @@ index 00000000..08ea762b
 +
 +void Wave::refresh(int sig) {
 +#ifdef SIGRTMIN
-+  if (config["signal"].isInt() && sig == SIGRTMIN + config["signal"].asInt()) {
++  if (config_["signal"].isInt() && sig == SIGRTMIN + config_["signal"].asInt()) {
 +    thread_.wake_up();
 +  }
 +#endif
 +}
 +
 +void Wave::handleEvent() {
-+  if (!config["exec-on-event"].isBool() || config["exec-on-event"].asBool()) {
++  if (!config_["exec-on-event"].isBool() || config_["exec-on-event"].asBool()) {
 +    thread_.wake_up();
 +  }
 +}
@@ -1139,7 +1139,7 @@ index 00000000..08ea762b
 +}
 +
 +auto Wave::update() -> void {
-+  if ((config["exec"].isString() || config["exec-if"].isString()) &&
++  if ((config_["exec"].isString() || config_["exec-if"].isString()) &&
 +      (output_.out.empty() || output_.exit_code != 0)) {
 +    event_box_.hide();
 +  } else {
