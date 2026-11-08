@@ -836,10 +836,10 @@ index 00000000..82ced7c1
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..e6d9d82c
+index 00000000..2417d588
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,412 @@
+@@ -0,0 +1,417 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -852,9 +852,12 @@ index 00000000..e6d9d82c
 +namespace waybar::modules {
 +
 +// ── WaveCanvas ─────────────────────────────────────────────────────
-+// Design D (user's pick, 2026-11-08): slim rounded bars mirrored
-+// from the center line — each bar grows up and down from the
-+// middle of the strip by its band value.
++// Design D refined (user's polish, 2026-11-08): CENTERED DOTS that
++// STRETCH into mirrored bars. At low level each column is just a
++// dot sitting on the center line; the stretch curve (v^1.5) keeps
++// it dot-like through the mid range and only strong levels pull
++// it into a real bar, and even then the bar never fills the
++// strip (max ~72% of the half height) — dots first, bars second.
 +
 +WaveCanvas::WaveCanvas() = default;
 +
@@ -905,7 +908,9 @@ index 00000000..e6d9d82c
 +  }
 +  const double mid = h / 2.0;
 +  const double step = w / static_cast<double>(n);
-+  const double bar_w = std::min(6.0, step * 0.55);
++  const double bar_w = std::min(5.0, step * 0.5);
++  const double dot_half = bar_w / 2.0;
++  const double max_half = (h / 2.0 - 1.5) * 0.72;
 +
 +  double r, g, b;
 +  if (!resolveColor(color_, r, g, b)) {
@@ -916,7 +921,7 @@ index 00000000..e6d9d82c
 +  cr->set_line_cap(Cairo::LINE_CAP_ROUND);
 +  for (size_t i = 0; i < n; ++i) {
 +    const double v = std::clamp(values_[i], 0.0, 1.0);
-+    const double half = std::max(bar_w / 2.0, v * (h / 2.0 - 1.5));
++    const double half = dot_half + std::pow(v, 1.5) * (max_half - dot_half);
 +    const double cx = step * (static_cast<double>(i) + 0.5);
 +    cr->move_to(cx, mid - half);
 +    cr->line_to(cx, mid + half);
