@@ -116,10 +116,10 @@ index 00000000..b285c7d7
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..c7e1a8bc
+index 00000000..38610388
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,99 @@
 +#pragma once
 +
 +#include <chrono>
@@ -165,6 +165,7 @@ index 00000000..c7e1a8bc
 +  std::vector<double> values_;
 +  std::string color_{"waybar-accent"};
 +  std::vector<std::string> gradient_;
++  double phase_ = 0.0;
 +};
 +
 +class Wave : public AModule {
@@ -840,10 +841,10 @@ index 00000000..82ced7c1
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..a458f35f
+index 00000000..132fec85
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,459 @@
+@@ -0,0 +1,483 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -861,12 +862,24 @@ index 00000000..a458f35f
 +// like the ● of the segmented level dots — never bars, not even
 +// small ones. Each column is a filled circle centered on the
 +// middle line; the level drives its DIAMETER (curve v^1.35, from
-+// ~3 px at rest to ~15 px at full), so the dots breathe in place.
-+// The color of each dot comes from a gradient swept across the
-+// columns between matugen theme colors, so the row takes several
-+// tonalities of the current wallpaper's palette.
++// ~3 px at rest to 20 px at full, so the big dots really read).
++// The columns are INSET from the canvas edges by the max radius,
++// so a fully grown dot is never clipped at the sides. The color
++// comes from a DYNAMIC gradient: a cyclic sweep between matugen
++// theme colors whose phase keeps rolling (a full turn in ~10 s),
++// so no dot keeps one color — the tonalities travel the row.
 +
-+WaveCanvas::WaveCanvas() = default;
++WaveCanvas::WaveCanvas() {
++  Glib::signal_timeout().connect(
++      [this]() {
++        phase_ = std::fmod(phase_ + 0.005, 1.0);
++        if (!values_.empty()) {
++          queue_draw();
++        }
++        return true;
++      },
++      50);
++}
 +
 +void WaveCanvas::setColor(const std::string& spec) { color_ = spec; }
 +
@@ -892,12 +905,17 @@ index 00000000..a458f35f
 +    b = stops[0][2];
 +    return true;
 +  }
-+  const double pos = std::clamp(t, 0.0, 1.0) * static_cast<double>(stops.size() - 1);
-+  const size_t idx = std::min(stops.size() - 2, static_cast<size_t>(pos));
-+  const double f = pos - static_cast<double>(idx);
-+  r = stops[idx][0] + (stops[idx + 1][0] - stops[idx][0]) * f;
-+  g = stops[idx][1] + (stops[idx + 1][1] - stops[idx][1]) * f;
-+  b = stops[idx][2] + (stops[idx + 1][2] - stops[idx][2]) * f;
++  // Cyclic: the sweep wraps from the last stop back to the first,
++  // and the rolling phase_ shifts every column's position in the
++  // cycle, so the colors travel instead of sitting still.
++  const double pos = std::fmod(std::clamp(t, 0.0, 1.0) + phase_, 1.0) *
++                     static_cast<double>(stops.size());
++  const size_t idx = static_cast<size_t>(pos) % stops.size();
++  const size_t nxt = (idx + 1) % stops.size();
++  const double f = pos - std::floor(pos);
++  r = stops[idx][0] + (stops[nxt][0] - stops[idx][0]) * f;
++  g = stops[idx][1] + (stops[nxt][1] - stops[idx][1]) * f;
++  b = stops[idx][2] + (stops[nxt][2] - stops[idx][2]) * f;
 +  return true;
 +}
 +
@@ -945,20 +963,27 @@ index 00000000..a458f35f
 +    return false;
 +  }
 +  const double mid = h / 2.0;
-+  const double step = w / static_cast<double>(n);
 +  const double min_d = 3.2;
-+  const double max_d = std::min(15.0, h - 6.0);
++  const double max_d = std::min(20.0, h - 6.0);
++  // Inset the columns by the max radius (+1 px of air) so the
++  // first and last dots are always drawn complete, never clipped
++  // by the canvas edges when they grow.
++  const double inset = max_d / 2.0 + 1.0;
++  if (w < 2 * inset + 4) {
++    return false;
++  }
++  const double span = w - 2 * inset;
 +
 +  for (size_t i = 0; i < n; ++i) {
 +    const double v = std::clamp(values_[i], 0.0, 1.0);
 +    const double d = min_d + std::pow(v, 1.35) * (max_d - min_d);
-+    const double cx = step * (static_cast<double>(i) + 0.5);
++    const double t = n > 1 ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.5;
++    const double cx = inset + span * t;
 +    double r, g, b;
-+    const double t = n > 1 ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.0;
 +    if (!gradientColor(t, r, g, b)) {
 +      r = g = b = 1.0;
 +    }
-+    cr->set_source_rgb(r, g, b);
++    cr->set_source_rgba(r, g, b, 0.92);
 +    cr->arc(cx, mid, d / 2.0, 0, 2 * M_PI);
 +    cr->fill();
 +  }
