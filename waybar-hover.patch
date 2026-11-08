@@ -1,9 +1,9 @@
 diff --git a/include/modules/ring.hpp b/include/modules/ring.hpp
 new file mode 100644
-index 00000000..c0e66096
+index 00000000..ce757fdf
 --- /dev/null
 +++ b/include/modules/ring.hpp
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,84 @@
 +#pragma once
 +
 +#include <chrono>
@@ -24,7 +24,10 @@ index 00000000..c0e66096
 +// from the live GTK theme at draw time (the @define-color palette
 +// that matugen regenerates into the bar's colors.css), so the ring
 +// re-themes with the rest of the bar instead of freezing a palette
-+// in code. Registered in the factory as "ring/<name>".
++// in code. The icon is drawn by the canvas itself (Pango + Cairo),
++// centered by its INK extents — a label centers the glyph's advance
++// box, whose bearings leave the visible glyph slightly off-center.
++// Registered in the factory as "ring/<name>".
 +class RingCanvas : public Gtk::DrawingArea {
 + public:
 +  RingCanvas();
@@ -32,6 +35,7 @@ index 00000000..c0e66096
 +  void setGradient(std::vector<std::string> stops);
 +  void setThickness(double px);
 +  void setSmooth(bool smooth);
++  void setIcon(const std::string& glyph, const std::string& color_spec);
 +
 + protected:
 +  bool on_draw(const Cairo::RefPtr<Cairo::Context>& cr) override;
@@ -39,6 +43,7 @@ index 00000000..c0e66096
 + private:
 +  bool resolveColor(const std::string& name, double& r, double& g, double& b);
 +  void arcColor(double pct, double& r, double& g, double& b);
++  void drawIcon(const Cairo::RefPtr<Cairo::Context>& cr, double cx, double cy, double diameter);
 +  bool tick();
 +
 +  double target_ = 0.0;
@@ -46,6 +51,8 @@ index 00000000..c0e66096
 +  double thickness_ = 3.0;
 +  bool smooth_ = true;
 +  std::vector<std::string> stops_{"waybar-tertiary", "waybar-source", "waybar-primary-container"};
++  std::string icon_glyph_;
++  std::string icon_color_{"waybar-accent"};
 +  sigc::connection anim_;
 +};
 +
@@ -68,9 +75,8 @@ index 00000000..c0e66096
 +  const std::string output_name_;
 +  std::chrono::seconds interval_{2};
 +
-+  Gtk::Overlay overlay_;
++  Gtk::Box wrap_;
 +  RingCanvas canvas_;
-+  Gtk::Label icon_;
 +
 +  std::string text_;
 +  std::string tooltip_;
@@ -150,10 +156,10 @@ index 86abb43d..f7e6f633 100644
      }
 diff --git a/src/modules/ring.cpp b/src/modules/ring.cpp
 new file mode 100644
-index 00000000..fe159bd6
+index 00000000..ac8c65c7
 --- /dev/null
 +++ b/src/modules/ring.cpp
-@@ -0,0 +1,325 @@
+@@ -0,0 +1,373 @@
 +#include "modules/ring.hpp"
 +
 +#include <gtk/gtk.h>
@@ -178,6 +184,42 @@ index 00000000..fe159bd6
 +void RingCanvas::setThickness(double px) { thickness_ = px; }
 +
 +void RingCanvas::setSmooth(bool smooth) { smooth_ = smooth; }
++
++void RingCanvas::setIcon(const std::string& glyph, const std::string& color_spec) {
++  if (glyph != icon_glyph_ || color_spec != icon_color_) {
++    icon_glyph_ = glyph;
++    icon_color_ = color_spec;
++    queue_draw();
++  }
++}
++
++void RingCanvas::drawIcon(const Cairo::RefPtr<Cairo::Context>& cr, double cx, double cy,
++                          double diameter) {
++  if (icon_glyph_.empty()) {
++    return;
++  }
++  double r, g, b;
++  if (!resolveColor(icon_color_, r, g, b)) {
++    r = g = b = 1.0;
++  }
++  cr->set_source_rgb(r, g, b);
++
++  auto layout = create_pango_layout(icon_glyph_);
++  Pango::FontDescription font("JetBrainsMono Nerd Font");
++  font.set_weight(Pango::WEIGHT_BOLD);
++  font.set_size(static_cast<int>(diameter * 0.46 * Pango::SCALE));
++  layout->set_font_description(font);
++
++  // Center by the glyph's INK box, not its advance box: Nerd Font
++  // glyphs carry asymmetric bearings, and centering the advance is
++  // what made the icon sit slightly off to one side.
++  Pango::Rectangle ink, logical;
++  layout->get_extents(ink, logical);
++  const double x = cx - (ink.get_x() + ink.get_width() / 2.0) / Pango::SCALE;
++  const double y = cy - (ink.get_y() + ink.get_height() / 2.0) / Pango::SCALE;
++  cr->move_to(x, y);
++  layout->show_in_cairo_context(cr);
++}
 +
 +void RingCanvas::setPercentage(double pct) {
 +  target_ = std::clamp(pct, 0.0, 100.0);
@@ -282,6 +324,8 @@ index 00000000..fe159bd6
 +    cr->arc(cx, cy, radius, start, start + sweep);
 +    cr->stroke();
 +  }
++
++  drawIcon(cr, cx, cy, std::min(alloc.get_width(), alloc.get_height()));
 +  return false;
 +}
 +
@@ -308,14 +352,12 @@ index 00000000..fe159bd6
 +    canvas_.setSmooth(config_["smooth"].asBool());
 +  }
 +
-+  overlay_.set_name("ring-" + name);
-+  overlay_.get_style_context()->add_class(MODULE_CLASS);
-+  overlay_.add(canvas_);
-+  icon_.set_halign(Gtk::ALIGN_CENTER);
-+  icon_.set_valign(Gtk::ALIGN_CENTER);
-+  overlay_.add_overlay(icon_);
-+  overlay_.set_overlay_pass_through(icon_, true);
-+  event_box_.add(overlay_);
++  wrap_.set_name("ring-" + name);
++  wrap_.get_style_context()->add_class(MODULE_CLASS);
++  wrap_.set_halign(Gtk::ALIGN_CENTER);
++  wrap_.set_valign(Gtk::ALIGN_CENTER);
++  wrap_.add(canvas_);
++  event_box_.add(wrap_);
 +
 +  // A matugen re-theme swaps the palette under us: redraw with it.
 +  canvas_.signal_style_updated().connect([this]() { canvas_.queue_draw(); });
@@ -426,13 +468,25 @@ index 00000000..fe159bd6
 +  } else {
 +    parseOutputJson();
 +
-+    icon_.set_text(text_);
++    // Icon color: the matugen accent, like the bar's other icons;
++    // warning/critical take the same tints the sys widgets already
++    // use for their text (#ffdf72 / #ff7280 in style.css).
++    std::string icon_color =
++        config_["icon-color"].isString() ? config_["icon-color"].asString() : "waybar-accent";
++    for (auto const& c : class_) {
++      if (c == "critical") {
++        icon_color = "#ff7280";
++      } else if (c == "warning") {
++        icon_color = "#ffdf72";
++      }
++    }
++    canvas_.setIcon(text_, icon_color);
 +    canvas_.setPercentage(percentage_);
 +    if (tooltipEnabled()) {
 +      event_box_.set_tooltip_markup(tooltip_);
 +    }
 +
-+    auto style = overlay_.get_style_context();
++    auto style = wrap_.get_style_context();
 +    for (auto const& c : style->list_classes()) {
 +      if (c == MODULE_CLASS) {
 +        continue;
