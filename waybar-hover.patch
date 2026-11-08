@@ -1,3 +1,15 @@
+diff --git a/include/AModule.hpp b/include/AModule.hpp
+index 3fea52f6..379b8722 100644
+--- a/include/AModule.hpp
++++ b/include/AModule.hpp
+@@ -113,6 +113,7 @@ class AModule : public IModule {
+   gdouble distance_scrolled_y_;
+   gdouble distance_scrolled_x_;
+   sigc::connection cursor_timeout_conn_;
++  sigc::connection hover_out_conn_;
+   static const inline std::map<std::pair<uint, GdkEventType>, std::string> eventMap_{
+       {std::make_pair(1, GdkEventType::GDK_BUTTON_PRESS), "on-click"},
+       {std::make_pair(1, GdkEventType::GDK_BUTTON_RELEASE), "on-click-release"},
 diff --git a/include/modules/ring.hpp b/include/modules/ring.hpp
 new file mode 100644
 index 00000000..b285c7d7
@@ -115,10 +127,20 @@ index a0c5b0d8..ec051e46 100644
      'src/modules/idle_inhibitor.cpp',
      'src/modules/image.cpp',
 diff --git a/src/AModule.cpp b/src/AModule.cpp
-index 65ffb433..a0cd4b7b 100644
+index 65ffb433..c380a949 100644
 --- a/src/AModule.cpp
 +++ b/src/AModule.cpp
-@@ -175,6 +175,14 @@ bool AModule::handleMouseEnter(GdkEventCrossing* const& e) {
+@@ -102,6 +102,9 @@ AModule::~AModule() {
+   if (cursor_timeout_conn_.connected()) {
+     cursor_timeout_conn_.disconnect();
+   }
++  if (hover_out_conn_.connected()) {
++    hover_out_conn_.disconnect();
++  }
+   for (const auto& pid : pid_children_) {
+     if (pid != -1) {
+       killpg(pid, SIGTERM);
+@@ -175,6 +178,17 @@ bool AModule::handleMouseEnter(GdkEventCrossing* const& e) {
      setCursor("pointer");
    }
  
@@ -126,6 +148,9 @@ index 65ffb433..a0cd4b7b 100644
 +  // dispatched exactly like click commands. Waybar upstream never
 +  // exposes hover to modules; this is what lets a pill react when the
 +  // cursor enters it (e.g. show its level bar while hovered).
++  // Entering cancels any pending hover-out dispatch (see the
++  // debounce in handleMouseLeave).
++  hover_out_conn_.disconnect();
 +  if (config_["on-hover"].isString()) {
 +    pid_children_.push_back(util::command::forkExec(config_["on-hover"].asString()));
 +  }
@@ -133,14 +158,29 @@ index 65ffb433..a0cd4b7b 100644
    return false;
  }
  
-@@ -188,6 +196,12 @@ bool AModule::handleMouseLeave(GdkEventCrossing* const& e) {
+@@ -188,6 +202,27 @@ bool AModule::handleMouseLeave(GdkEventCrossing* const& e) {
      setCursor("default");
    }
  
 +  // Local patch (2026-11-08): run the configured "on-hover-out"
 +  // command, counterpart of "on-hover" in handleMouseEnter.
++  // Debounced (same day, polish round): the dispatch waits
++  // 400 ms and an intervening enter cancels it. When a module
++  // grows under the cursor (a level bar appearing inside it),
++  // the re-layout makes GTK emit short spurious leaves; firing
++  // hover-out on those closed the bar while the pointer was
++  // still over the module — the bar must only hide after the
++  // pointer has really left (the script's own grace period
++  // then counts from a truthful leave).
 +  if (config_["on-hover-out"].isString()) {
-+    pid_children_.push_back(util::command::forkExec(config_["on-hover-out"].asString()));
++    hover_out_conn_.disconnect();
++    const std::string cmd = config_["on-hover-out"].asString();
++    hover_out_conn_ = Glib::signal_timeout().connect(
++        [this, cmd]() {
++          pid_children_.push_back(util::command::forkExec(cmd));
++          return false;
++        },
++        400);
 +  }
 +
    return false;
