@@ -1,9 +1,9 @@
 diff --git a/include/modules/ring.hpp b/include/modules/ring.hpp
 new file mode 100644
-index 00000000..1fc4df3e
+index 00000000..b285c7d7
 --- /dev/null
 +++ b/include/modules/ring.hpp
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,98 @@
 +#pragma once
 +
 +#include <chrono>
@@ -37,6 +37,7 @@ index 00000000..1fc4df3e
 +  void setThickness(double px);
 +  void setSmooth(bool smooth);
 +  void setTrackAlpha(double alpha);
++  void setArcColor(const std::string& spec);
 +  void setIcon(const std::string& glyph, const std::string& color_spec);
 +
 + protected:
@@ -53,6 +54,7 @@ index 00000000..1fc4df3e
 +  double thickness_ = 3.0;
 +  double track_alpha_ = 0.22;
 +  bool smooth_ = true;
++  std::string arc_color_;
 +  std::vector<std::string> stops_{"waybar-tertiary", "waybar-source", "waybar-primary-container"};
 +  std::string icon_glyph_;
 +  std::string icon_color_{"waybar-accent"};
@@ -84,9 +86,11 @@ index 00000000..1fc4df3e
 +
 +  Gtk::Box wrap_;
 +  RingCanvas canvas_;
++  Gtk::Label bar_label_;
 +
 +  std::string text_;
 +  std::string tooltip_;
++  std::string bar_;
 +  std::string icon_color_json_;
 +  std::vector<std::string> class_;
 +  int percentage_ = 0;
@@ -166,10 +170,10 @@ index 86abb43d..f7e6f633 100644
      }
 diff --git a/src/modules/ring.cpp b/src/modules/ring.cpp
 new file mode 100644
-index 00000000..53398e56
+index 00000000..c9027aa8
 --- /dev/null
 +++ b/src/modules/ring.cpp
-@@ -0,0 +1,464 @@
+@@ -0,0 +1,500 @@
 +#include "modules/ring.hpp"
 +
 +#include <gtk/gtk.h>
@@ -197,6 +201,8 @@ index 00000000..53398e56
 +
 +void RingCanvas::setTrackAlpha(double alpha) { track_alpha_ = std::clamp(alpha, 0.0, 1.0); }
 +
++void RingCanvas::setArcColor(const std::string& spec) { arc_color_ = spec; }
++
 +void RingCanvas::setIcon(const std::string& glyph, const std::string& color_spec) {
 +  if (glyph != icon_glyph_ || color_spec != icon_color_) {
 +    icon_glyph_ = glyph;
@@ -215,6 +221,17 @@ index 00000000..53398e56
 +    r = g = b = 1.0;
 +  }
 +  cr->set_source_rgb(r, g, b);
++
++  // Precise placement: with font hinting on, Pango snaps the layout
++  // origin to whole pixels while the extents stay fractional, so
++  // the icon lands up to half a pixel off the ring's center (the
++  // brightness sun made it obvious at this size). Unhinted
++  // rendering matches the ink extents exactly.
++  auto font_options = Cairo::FontOptions::create();
++  font_options->set_hint_style(Cairo::HINT_STYLE_NONE);
++  font_options->set_hint_metrics(Cairo::HINT_METRICS_OFF);
++  font_options->set_antialias(Cairo::ANTIALIAS_SUBPIXEL);
++  cr->set_font_options(font_options);
 +
 +  auto layout = create_pango_layout(icon_glyph_);
 +  Pango::FontDescription font("JetBrainsMono Nerd Font");
@@ -329,10 +346,17 @@ index 00000000..53398e56
 +    cr->stroke();
 +  }
 +
-+  // Arc: from the top, sweeping clockwise with the level; its color
-+  // walks the gradient stops as the percentage grows.
++  // Arc: from the top, sweeping clockwise with the level. With an
++  // "arc-color" configured, the arc keeps that single tone at
++  // every level (the user's call: battery's full tone everywhere,
++  // not a different tone per ring); without it, the color walks
++  // the gradient stops as the percentage grows.
 +  if (shown_ > 0.05) {
-+    arcColor(shown_, r, g, b);
++    if (!arc_color_.empty() && resolveColor(arc_color_, r, g, b)) {
++      // flat tone from arc-color_
++    } else {
++      arcColor(shown_, r, g, b);
++    }
 +    cr->set_source_rgb(r, g, b);
 +    const double start = -M_PI / 2.0;
 +    const double sweep = std::min(shown_, 100.0) / 100.0 * 2 * M_PI;
@@ -369,12 +393,21 @@ index 00000000..53398e56
 +  if (config_["smooth"].isBool()) {
 +    canvas_.setSmooth(config_["smooth"].asBool());
 +  }
++  if (config_["arc-color"].isString()) {
++    canvas_.setArcColor(config_["arc-color"].asString());
++  }
 +
 +  wrap_.set_name("ring-" + name);
 +  wrap_.get_style_context()->add_class(MODULE_CLASS);
 +  wrap_.set_halign(Gtk::ALIGN_CENTER);
 +  wrap_.set_valign(Gtk::ALIGN_CENTER);
 +  wrap_.add(canvas_);
++  // Optional level bar (JSON "bar"): the level pills show it next
++  // to the ring while hovering or adjusting, like their text
++  // widgets did — the ring itself is the at-a-glance indicator.
++  wrap_.pack_start(bar_label_, false, false, 0);
++  bar_label_.set_no_show_all(true);
++  bar_label_.hide();
 +  event_box_.add(wrap_);
 +
 +  // A matugen re-theme swaps the palette under us: redraw with it.
@@ -581,6 +614,12 @@ index 00000000..53398e56
 +    }
 +    canvas_.setIcon(text_, icon_color);
 +    canvas_.setPercentage(percentage_);
++    if (bar_.empty()) {
++      bar_label_.hide();
++    } else {
++      bar_label_.set_markup(bar_);
++      bar_label_.show();
++    }
 +    if (tooltipEnabled()) {
 +      event_box_.set_tooltip_markup(tooltip_);
 +    }
@@ -629,6 +668,7 @@ index 00000000..53398e56
 +    }
 +    icon_color_json_ =
 +        parsed["icon-color"].isString() ? parsed["icon-color"].asString() : "";
++    bar_ = sanitize(parsed["bar"].asString());
 +    break;
 +  }
 +}
