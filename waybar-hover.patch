@@ -1,0 +1,32 @@
+diff --git a/src/AModule.cpp b/src/AModule.cpp
+index 65ffb433..a0cd4b7b 100644
+--- a/src/AModule.cpp
++++ b/src/AModule.cpp
+@@ -175,6 +175,14 @@ bool AModule::handleMouseEnter(GdkEventCrossing* const& e) {
+     setCursor("pointer");
+   }
+ 
++  // Local patch (2026-11-08): run the configured "on-hover" command,
++  // dispatched exactly like click commands. Waybar upstream never
++  // exposes hover to modules; this is what lets a pill react when the
++  // cursor enters it (e.g. show its level bar while hovered).
++  if (config_["on-hover"].isString()) {
++    pid_children_.push_back(util::command::forkExec(config_["on-hover"].asString()));
++  }
++
+   return false;
+ }
+ 
+@@ -188,6 +196,12 @@ bool AModule::handleMouseLeave(GdkEventCrossing* const& e) {
+     setCursor("default");
+   }
+ 
++  // Local patch (2026-11-08): run the configured "on-hover-out"
++  // command, counterpart of "on-hover" in handleMouseEnter.
++  if (config_["on-hover-out"].isString()) {
++    pid_children_.push_back(util::command::forkExec(config_["on-hover-out"].asString()));
++  }
++
+   return false;
+ }
+ 
