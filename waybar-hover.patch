@@ -1,3 +1,99 @@
+diff --git a/include/modules/ring.hpp b/include/modules/ring.hpp
+new file mode 100644
+index 00000000..c0e66096
+--- /dev/null
++++ b/include/modules/ring.hpp
+@@ -0,0 +1,78 @@
++#pragma once
++
++#include <chrono>
++#include <string>
++#include <vector>
++
++#include "AModule.hpp"
++#include "util/command.hpp"
++#include "util/json.hpp"
++#include "util/sleeper_thread.hpp"
++
++namespace waybar::modules {
++
++// Local module (2026-11-08): a circular percentage ring drawn with
++// Cairo around a centered icon glyph — stock Waybar has no way to
++// draw one. Data comes from an exec command returning the usual
++// custom-module JSON plus "percentage". Colors are looked up BY NAME
++// from the live GTK theme at draw time (the @define-color palette
++// that matugen regenerates into the bar's colors.css), so the ring
++// re-themes with the rest of the bar instead of freezing a palette
++// in code. Registered in the factory as "ring/<name>".
++class RingCanvas : public Gtk::DrawingArea {
++ public:
++  RingCanvas();
++  void setPercentage(double pct);
++  void setGradient(std::vector<std::string> stops);
++  void setThickness(double px);
++  void setSmooth(bool smooth);
++
++ protected:
++  bool on_draw(const Cairo::RefPtr<Cairo::Context>& cr) override;
++
++ private:
++  bool resolveColor(const std::string& name, double& r, double& g, double& b);
++  void arcColor(double pct, double& r, double& g, double& b);
++  bool tick();
++
++  double target_ = 0.0;
++  double shown_ = 0.0;
++  double thickness_ = 3.0;
++  bool smooth_ = true;
++  std::vector<std::string> stops_{"waybar-tertiary", "waybar-source", "waybar-primary-container"};
++  sigc::connection anim_;
++};
++
++class Ring : public AModule {
++ public:
++  Ring(const std::string&, const std::string&, const Json::Value&, const std::string&);
++  ~Ring() override = default;
++  auto update() -> void override;
++  void refresh(int /*signal*/) override;
++
++ private:
++  void delayWorker();
++  void waitingWorker();
++  void handleEvent();
++  bool handleScroll(GdkEventScroll* e) override;
++  bool handleToggle(GdkEventButton* const& e) override;
++  void parseOutputJson();
++
++  const std::string name_;
++  const std::string output_name_;
++  std::chrono::seconds interval_{2};
++
++  Gtk::Overlay overlay_;
++  RingCanvas canvas_;
++  Gtk::Label icon_;
++
++  std::string text_;
++  std::string tooltip_;
++  std::vector<std::string> class_;
++  int percentage_ = 0;
++  util::command::res output_;
++  util::JsonParser parser_;
++  util::SleeperThread thread_;
++};
++
++}  // namespace waybar::modules
+diff --git a/meson.build b/meson.build
+index a0c5b0d8..ec051e46 100644
+--- a/meson.build
++++ b/meson.build
+@@ -182,6 +182,7 @@ src_files = files(
+     'src/AAppIconLabel.cpp',
+     'src/modules/custom.cpp',
+     'src/modules/custom_graph.cpp',
++    'src/modules/ring.cpp',
+     'src/modules/disk.cpp',
+     'src/modules/idle_inhibitor.cpp',
+     'src/modules/image.cpp',
 diff --git a/src/AModule.cpp b/src/AModule.cpp
 index 65ffb433..a0cd4b7b 100644
 --- a/src/AModule.cpp
@@ -30,3 +126,356 @@ index 65ffb433..a0cd4b7b 100644
    return false;
  }
  
+diff --git a/src/factory.cpp b/src/factory.cpp
+index 86abb43d..f7e6f633 100644
+--- a/src/factory.cpp
++++ b/src/factory.cpp
+@@ -129,6 +129,7 @@
+ #include "modules/cffi.hpp"
+ #include "modules/custom.hpp"
+ #include "modules/custom_graph.hpp"
++#include "modules/ring.hpp"
+ #include "modules/image.hpp"
+ #include "modules/temperature.hpp"
+ #include "modules/user.hpp"
+@@ -398,6 +399,9 @@ waybar::AModule* waybar::Factory::makeModule(const std::string& name,
+     if (ref.compare(0, 13, "custom-graph/") == 0 && ref.size() > 13) {
+       return new waybar::modules::CustomGraph(ref.substr(13), id, config_[name], bar_.output->name);
+     }
++    if (ref.compare(0, 5, "ring/") == 0 && ref.size() > 5) {
++      return new waybar::modules::Ring(ref.substr(5), id, config_[name], bar_.output->name);
++    }
+     if (ref.compare(0, 5, "cffi/") == 0 && ref.size() > 5) {
+       return new waybar::modules::CFFI(ref.substr(5), id, config_[name]);
+     }
+diff --git a/src/modules/ring.cpp b/src/modules/ring.cpp
+new file mode 100644
+index 00000000..81049ea3
+--- /dev/null
++++ b/src/modules/ring.cpp
+@@ -0,0 +1,325 @@
++#include "modules/ring.hpp"
++
++#include <gtk/gtk.h>
++#include <spdlog/spdlog.h>
++
++#include <algorithm>
++#include <cerrno>
++#include <cmath>
++
++namespace waybar::modules {
++
++// ── RingCanvas ─────────────────────────────────────────────────────
++
++RingCanvas::RingCanvas() = default;
++
++void RingCanvas::setGradient(std::vector<std::string> stops) {
++  if (!stops.empty()) {
++    stops_ = std::move(stops);
++  }
++}
++
++void RingCanvas::setThickness(double px) { thickness_ = px; }
++
++void RingCanvas::setSmooth(bool smooth) { smooth_ = smooth; }
++
++void RingCanvas::setPercentage(double pct) {
++  target_ = std::clamp(pct, 0.0, 100.0);
++  if (!smooth_) {
++    shown_ = target_;
++    queue_draw();
++    return;
++  }
++  if (std::abs(target_ - shown_) < 0.35) {
++    shown_ = target_;
++    queue_draw();
++    return;
++  }
++  if (!anim_.connected()) {
++    anim_ = Glib::signal_timeout().connect(sigc::mem_fun(*this, &RingCanvas::tick), 16);
++  }
++}
++
++bool RingCanvas::tick() {
++  const double diff = target_ - shown_;
++  if (std::abs(diff) < 0.35) {
++    shown_ = target_;
++    queue_draw();
++    return false;
++  }
++  shown_ += diff * 0.22;
++  queue_draw();
++  return true;
++}
++
++bool RingCanvas::resolveColor(const std::string& name, double& r, double& g, double& b) {
++  // First choice: a named color of the live theme (@define-color in
++  // the loaded CSS — this is how the ring follows matugen).
++  GdkColor gdk{};
++  if (gtk_style_context_lookup_color(get_style_context()->gobj(), name.c_str(), &gdk)) {
++    r = gdk.red / 65535.0;
++    g = gdk.green / 65535.0;
++    b = gdk.blue / 65535.0;
++    return true;
++  }
++  // Fallback: a literal CSS color ("#e0b6ff", "rgb(...)", "red"...).
++  GdkRGBA rgba{};
++  if (gdk_rgba_parse(&rgba, name.c_str())) {
++    r = rgba.red;
++    g = rgba.green;
++    b = rgba.blue;
++    return true;
++  }
++  return false;
++}
++
++void RingCanvas::arcColor(double pct, double& r, double& g, double& b) {
++  if (stops_.size() == 1) {
++    if (!resolveColor(stops_[0], r, g, b)) {
++      r = g = b = 1.0;
++    }
++    return;
++  }
++  const double t =
++      std::clamp(pct, 0.0, 100.0) / 100.0 * static_cast<double>(stops_.size() - 1);
++  const auto i = std::min(static_cast<size_t>(t), stops_.size() - 2);
++  const double f = t - static_cast<double>(i);
++  double r1, g1, b1, r2, g2, b2;
++  if (!resolveColor(stops_[i], r1, g1, b1)) {
++    r1 = g1 = b1 = 1.0;
++  }
++  if (!resolveColor(stops_[i + 1], r2, g2, b2)) {
++    r2 = g2 = b2 = 1.0;
++  }
++  r = r1 + (r2 - r1) * f;
++  g = g1 + (g2 - g1) * f;
++  b = b1 + (b2 - b1) * f;
++}
++
++bool RingCanvas::on_draw(const Cairo::RefPtr<Cairo::Context>& cr) {
++  const auto alloc = get_allocation();
++  const double cx = alloc.get_width() / 2.0;
++  const double cy = alloc.get_height() / 2.0;
++  const double radius = std::min(alloc.get_width(), alloc.get_height()) / 2.0 - thickness_ / 2.0 - 0.5;
++  if (radius <= 1.0) {
++    return false;
++  }
++  cr->set_line_cap(Cairo::LINE_CAP_ROUND);
++  cr->set_line_width(thickness_);
++
++  // Track: the full circle in the first gradient color, dimmed.
++  double r, g, b;
++  if (resolveColor(stops_.front(), r, g, b)) {
++    cr->set_source_rgba(r, g, b, 0.22);
++    cr->arc(cx, cy, radius, 0, 2 * M_PI);
++    cr->stroke();
++  }
++
++  // Arc: from the top, sweeping clockwise with the level; its color
++  // walks the gradient stops as the percentage grows.
++  if (shown_ > 0.05) {
++    arcColor(shown_, r, g, b);
++    cr->set_source_rgb(r, g, b);
++    const double start = -M_PI / 2.0;
++    const double sweep = std::min(shown_, 100.0) / 100.0 * 2 * M_PI;
++    cr->arc(cx, cy, radius, start, start + sweep);
++    cr->stroke();
++  }
++  return false;
++}
++
++// ── Ring ───────────────────────────────────────────────────────────
++
++Ring::Ring(const std::string& name, const std::string& id, const Json::Value& config,
++           const std::string& output_name)
++    : AModule(config, "ring-" + name, id, true, true), name_(name), output_name_(output_name) {
++  const int size = config_["size"].isNumeric() ? static_cast<int>(config_["size"].asDouble()) : 28;
++  canvas_.set_size_request(size, size);
++  if (config_["thickness"].isNumeric()) {
++    canvas_.setThickness(config_["thickness"].asDouble());
++  }
++  if (config_["gradient"].isArray()) {
++    std::vector<std::string> stops;
++    for (auto const& s : config_["gradient"]) {
++      if (s.isString()) {
++        stops.push_back(s.asString());
++      }
++    }
++    canvas_.setGradient(stops);
++  }
++  if (config_["smooth"].isBool()) {
++    canvas_.setSmooth(config_["smooth"].asBool());
++  }
++
++  overlay_.set_name("ring-" + name);
++  overlay_.get_style_context()->add_class(MODULE_CLASS);
++  overlay_.add(canvas_);
++  icon_.set_halign(Gtk::ALIGN_CENTER);
++  icon_.set_valign(Gtk::ALIGN_CENTER);
++  overlay_.add_overlay(icon_);
++  overlay_.set_overlay_pass_through(icon_, true);
++  event_box_.add(overlay_);
++
++  // A matugen re-theme swaps the palette under us: redraw with it.
++  canvas_.signal_style_updated().connect(
++      [this](const Glib::RefPtr<Gtk::Style>&) { canvas_.queue_draw(); });
++
++  if (config_["interval"].isNumeric()) {
++    interval_ = std::chrono::seconds(static_cast<long>(config_["interval"].asDouble()));
++  }
++
++  // Same worker model as the custom module: signal-only waits,
++  // otherwise poll on the interval.
++  if (!config_["signal"].empty() && config_["interval"].empty()) {
++    waitingWorker();
++  } else {
++    delayWorker();
++  }
++}
++
++void Ring::delayWorker() {
++  if (!config_["exec"].isString() && !config_["exec-if"].isString()) {
++    dp.emit();
++    return;
++  }
++
++  thread_ = [this] {
++    for (auto it = this->pid_children_.begin(); it != this->pid_children_.end();) {
++      int status = 0;
++      const auto pid = static_cast<pid_t>(*it);
++      const auto waited = waitpid(pid, &status, WNOHANG);
++      if (waited == 0) {
++        ++it;
++        continue;
++      }
++      if (waited == -1 && errno != ECHILD) {
++        ++it;
++        continue;
++      }
++      it = this->pid_children_.erase(it);
++    }
++
++    bool can_update = true;
++    if (config_["exec-if"].isString()) {
++      output_ = util::command::execNoRead(config_["exec-if"].asString());
++      if (output_.exit_code != 0) {
++        can_update = false;
++        dp.emit();
++      }
++    }
++    if (can_update) {
++      if (config_["exec"].isString()) {
++        output_ = util::command::exec(config_["exec"].asString(), output_name_);
++      }
++      dp.emit();
++    }
++    thread_.sleep_for(interval_);
++  };
++}
++
++void Ring::waitingWorker() {
++  thread_ = [this] {
++    bool can_update = true;
++    if (config_["exec-if"].isString()) {
++      output_ = util::command::execNoRead(config_["exec-if"].asString());
++      if (output_.exit_code != 0) {
++        can_update = false;
++        dp.emit();
++      }
++    }
++    if (can_update) {
++      if (config_["exec"].isString()) {
++        output_ = util::command::exec(config_["exec"].asString(), output_name_);
++      }
++      dp.emit();
++    }
++    thread_.sleep();
++  };
++}
++
++void Ring::refresh(int sig) {
++#ifdef SIGRTMIN
++  if (config_["signal"].isInt() && sig == SIGRTMIN + config_["signal"].asInt()) {
++    thread_.wake_up();
++  }
++#endif
++}
++
++void Ring::handleEvent() {
++  if (!config_["exec-on-event"].isBool() || config_["exec-on-event"].asBool()) {
++    thread_.wake_up();
++  }
++}
++
++bool Ring::handleScroll(GdkEventScroll* e) {
++  auto ret = AModule::handleScroll(e);
++  handleEvent();
++  return ret;
++}
++
++bool Ring::handleToggle(GdkEventButton* const& e) {
++  auto ret = AModule::handleToggle(e);
++  handleEvent();
++  return ret;
++}
++
++auto Ring::update() -> void {
++  if ((config_["exec"].isString() || config_["exec-if"].isString()) &&
++      (output_.out.empty() || output_.exit_code != 0)) {
++    event_box_.hide();
++  } else {
++    parseOutputJson();
++
++    icon_.set_text(text_);
++    canvas_.setPercentage(percentage_);
++    if (tooltipEnabled()) {
++      event_box_.set_tooltip_markup(tooltip_);
++    }
++
++    auto style = overlay_.get_style_context();
++    for (auto const& c : style->list_classes()) {
++      if (c == MODULE_CLASS) {
++        continue;
++      }
++      style->remove_class(c);
++    }
++    for (auto const& c : class_) {
++      style->add_class(c);
++    }
++    event_box_.show();
++  }
++  AModule::update();
++}
++
++void Ring::parseOutputJson() {
++  std::istringstream output(output_.out);
++  std::string line;
++  class_.clear();
++  auto sanitize = [](const std::string& s) -> Glib::ustring {
++    Glib::ustring value = s;
++    if (!value.validate()) {
++      value = value.make_valid();
++    }
++    return value;
++  };
++  while (getline(output, line)) {
++    auto parsed = parser_.parse(line);
++    text_ = sanitize(parsed["text"].asString());
++    tooltip_ = sanitize(parsed["tooltip"].asString());
++    if (parsed["class"].isString()) {
++      class_.push_back(parsed["class"].asString());
++    } else if (parsed["class"].isArray()) {
++      for (auto const& c : parsed["class"]) {
++        class_.push_back(c.asString());
++      }
++    }
++    if (parsed["percentage"].isNumeric()) {
++      percentage_ = static_cast<int>(lround(parsed["percentage"].asFloat()));
++    } else {
++      percentage_ = 0;
++    }
++    break;
++  }
++}
++
++}  // namespace waybar::modules

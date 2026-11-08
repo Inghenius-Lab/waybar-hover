@@ -27,3 +27,14 @@ Descarga (repo público):
 ```sh
 curl -LO https://github.com/Inghenius-Lab/waybar-hover/releases/download/build/waybar
 ```
+## Módulo ring/* (2026-11-08)
+
+Módulo nuevo `ring/<nombre>`: anillo de porcentaje dibujado con
+Cairo alrededor de un icono centrado. El `exec` devuelve el JSON
+de siempre de los módulos custom más "percentage" (0-100).
+Config: `size` (px, 28), `thickness` (px, 3), `smooth` (true),
+`gradient`: paradas de color por NOMBRE del tema GTK (los
+@define-color que genera matugen en colors.css se resuelven en
+cada dibujo: el anillo sigue al tema) o literales CSS; por
+defecto waybar-tertiary -> waybar-source -> waybar-primary-container.
+Sin números: el porcentaje exacto vive en el tooltip.
