@@ -170,7 +170,7 @@ index 86abb43d..f7e6f633 100644
      }
 diff --git a/src/modules/ring.cpp b/src/modules/ring.cpp
 new file mode 100644
-index 00000000..c9027aa8
+index 00000000..82ced7c1
 --- /dev/null
 +++ b/src/modules/ring.cpp
 @@ -0,0 +1,500 @@
@@ -227,10 +227,10 @@ index 00000000..c9027aa8
 +  // the icon lands up to half a pixel off the ring's center (the
 +  // brightness sun made it obvious at this size). Unhinted
 +  // rendering matches the ink extents exactly.
-+  auto font_options = Cairo::FontOptions::create();
-+  font_options->set_hint_style(Cairo::HINT_STYLE_NONE);
-+  font_options->set_hint_metrics(Cairo::HINT_METRICS_OFF);
-+  font_options->set_antialias(Cairo::ANTIALIAS_SUBPIXEL);
++  Cairo::FontOptions font_options;
++  font_options.set_hint_style(Cairo::HINT_STYLE_NONE);
++  font_options.set_hint_metrics(Cairo::HINT_METRICS_OFF);
++  font_options.set_antialias(Cairo::ANTIALIAS_SUBPIXEL);
 +  cr->set_font_options(font_options);
 +
 +  auto layout = create_pango_layout(icon_glyph_);
