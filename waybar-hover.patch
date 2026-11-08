@@ -1,9 +1,9 @@
 diff --git a/include/modules/ring.hpp b/include/modules/ring.hpp
 new file mode 100644
-index 00000000..ab1c0141
+index 00000000..1fc4df3e
 --- /dev/null
 +++ b/include/modules/ring.hpp
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,94 @@
 +#pragma once
 +
 +#include <chrono>
@@ -12,6 +12,7 @@ index 00000000..ab1c0141
 +
 +#include "AModule.hpp"
 +#include "util/command.hpp"
++#include "util/command_line_stream.hpp"
 +#include "util/json.hpp"
 +#include "util/sleeper_thread.hpp"
 +
@@ -61,13 +62,17 @@ index 00000000..ab1c0141
 +class Ring : public AModule {
 + public:
 +  Ring(const std::string&, const std::string&, const Json::Value&, const std::string&);
-+  ~Ring() override = default;
++  ~Ring() override;
 +  auto update() -> void override;
 +  void refresh(int /*signal*/) override;
 +
 + private:
 +  void delayWorker();
 +  void waitingWorker();
++  void continuousWorker();
++  void startContinuousProcess(bool throw_on_failure);
++  void handleContinuousProcessExit(int exit_code);
++  void scheduleContinuousRestart();
 +  void handleEvent();
 +  bool handleScroll(GdkEventScroll* e) override;
 +  bool handleToggle(GdkEventButton* const& e) override;
@@ -75,17 +80,20 @@ index 00000000..ab1c0141
 +
 +  const std::string name_;
 +  const std::string output_name_;
-+  std::chrono::seconds interval_{2};
++  std::chrono::seconds interval_{0};
 +
 +  Gtk::Box wrap_;
 +  RingCanvas canvas_;
 +
 +  std::string text_;
 +  std::string tooltip_;
++  std::string icon_color_json_;
 +  std::vector<std::string> class_;
 +  int percentage_ = 0;
 +  util::command::res output_;
 +  util::JsonParser parser_;
++  std::unique_ptr<util::command::LineStream> continuous_stream_;
++  sigc::connection restart_connection_;
 +  util::SleeperThread thread_;
 +};
 +
@@ -158,10 +166,10 @@ index 86abb43d..f7e6f633 100644
      }
 diff --git a/src/modules/ring.cpp b/src/modules/ring.cpp
 new file mode 100644
-index 00000000..1ed5bc77
+index 00000000..42687254
 --- /dev/null
 +++ b/src/modules/ring.cpp
-@@ -0,0 +1,381 @@
+@@ -0,0 +1,472 @@
 +#include "modules/ring.hpp"
 +
 +#include <gtk/gtk.h>
@@ -380,8 +388,22 @@ index 00000000..1ed5bc77
 +  // otherwise poll on the interval.
 +  if (!config_["signal"].empty() && config_["interval"].empty()) {
 +    waitingWorker();
-+  } else {
++  } else if (interval_.count() > 0) {
 +    delayWorker();
++  } else if (config_["exec"].isString()) {
++    // No interval and no signal: the exec is a stream that prints
++    // one JSON line per update (e.g. the dictation daemon, whose
++    // state changes on its own: recording, transcribing...).
++    continuousWorker();
++  } else {
++    dp.emit();
++  }
++}
++
++Ring::~Ring() {
++  restart_connection_.disconnect();
++  if (continuous_stream_) {
++    continuous_stream_->stop();
 +  }
 +}
 +
@@ -423,6 +445,75 @@ index 00000000..1ed5bc77
 +    }
 +    thread_.sleep_for(interval_);
 +  };
++}
++
++void Ring::continuousWorker() {
++  continuous_stream_ = std::make_unique<util::command::LineStream>(
++      [this](const std::string& line) {
++        output_.out = line;
++        dp.emit();
++      },
++      [this](int exit_code) { handleContinuousProcessExit(exit_code); });
++  try {
++    startContinuousProcess(true);
++  } catch (const std::exception& e) {
++    text_ = "Ring: failed to start continuous process";
++    tooltip_ = std::string(e.what());
++    spdlog::error("{}: {}", name_, e.what());
++    dp.emit();
++  }
++}
++
++void Ring::startContinuousProcess(bool throw_on_failure) {
++  if (continuous_stream_ == nullptr) {
++    return;
++  }
++
++  restart_connection_.disconnect();
++
++  const auto& exec = config_["exec"];
++  if (!exec.isString() || exec.asString().empty()) {
++    if (throw_on_failure) {
++      throw std::invalid_argument("Ring: continuous process requires a non-empty exec string");
++    }
++    return;
++  }
++
++  std::string cmd = exec.asString();
++  fmt::dynamic_format_arg_store<fmt::format_context> store;
++  store.push_ref(fmt::arg("name", name_));
++  cmd = fmt::vformat(cmd, store);
++  spdlog::debug("Ring: starting continuous exec: {}", cmd);
++  continuous_stream_->start(cmd, output_name_);
++}
++
++void Ring::handleContinuousProcessExit(int exit_code) {
++  output_.exit_code = exit_code;
++  if (exit_code != 0) {
++    spdlog::warn("{}: continuous exec exited with code {}, restarting in 2s", name_, exit_code);
++    output_.out.clear();
++    text_.clear();
++  }
++  scheduleContinuousRestart();
++}
++
++void Ring::scheduleContinuousRestart() {
++  if (continuous_stream_ == nullptr || continuous_stream_->is_running()) {
++    return;
++  }
++
++  restart_connection_.disconnect();
++  restart_connection_ = Glib::signal_timeout().connect_seconds(
++      [this]() {
++        try {
++          startContinuousProcess(false);
++        } catch (const std::exception& e) {
++          spdlog::warn("{}: failed to restart continuous process: {}", name_, e.what());
++          scheduleContinuousRestart();
++        }
++        return false;
++      },
++      2);
 +}
 +
 +void Ring::waitingWorker() {
@@ -480,7 +571,10 @@ index 00000000..1ed5bc77
 +
 +    // Icon color: the matugen accent, like the bar's other icons;
 +    // warning/critical take the same tints the sys widgets already
-+    // use for their text (#ffdf72 / #ff7280 in style.css).
++    // use for their text (#ffdf72 / #ff7280 in style.css). A
++    // script-provided "icon-color" (state-driven states that live
++    // in the script, e.g. dictation recording or muted volume)
++    // wins over all of the above.
 +    std::string icon_color =
 +        config_["icon-color"].isString() ? config_["icon-color"].asString() : "waybar-accent";
 +    for (auto const& c : class_) {
@@ -489,6 +583,9 @@ index 00000000..1ed5bc77
 +      } else if (c == "warning") {
 +        icon_color = "#ffdf72";
 +      }
++    }
++    if (!icon_color_json_.empty()) {
++      icon_color = icon_color_json_;
 +    }
 +    canvas_.setIcon(text_, icon_color);
 +    canvas_.setPercentage(percentage_);
@@ -538,6 +635,8 @@ index 00000000..1ed5bc77
 +    } else {
 +      percentage_ = 0;
 +    }
++    icon_color_json_ =
++        parsed["icon-color"].isString() ? parsed["icon-color"].asString() : "";
 +    break;
 +  }
 +}
