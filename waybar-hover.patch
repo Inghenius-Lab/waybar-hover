@@ -166,10 +166,10 @@ index 86abb43d..f7e6f633 100644
      }
 diff --git a/src/modules/ring.cpp b/src/modules/ring.cpp
 new file mode 100644
-index 00000000..42687254
+index 00000000..53398e56
 --- /dev/null
 +++ b/src/modules/ring.cpp
-@@ -0,0 +1,472 @@
+@@ -0,0 +1,464 @@
 +#include "modules/ring.hpp"
 +
 +#include <gtk/gtk.h>
@@ -449,71 +449,63 @@ index 00000000..42687254
 +
 +void Ring::continuousWorker() {
 +  continuous_stream_ = std::make_unique<util::command::LineStream>(
-+      [this](const std::string& line) {
-+        output_.out = line;
++      output_name_,
++      [this](const std::string& output) {
++        output_ = {.exit_code = 0, .out = output};
 +        dp.emit();
 +      },
 +      [this](int exit_code) { handleContinuousProcessExit(exit_code); });
-+  try {
-+    startContinuousProcess(true);
-+  } catch (const std::exception& e) {
-+    text_ = "Ring: failed to start continuous process";
-+    tooltip_ = std::string(e.what());
-+    spdlog::error("{}: {}", name_, e.what());
-+    dp.emit();
-+  }
++  startContinuousProcess(true);
 +}
 +
 +void Ring::startContinuousProcess(bool throw_on_failure) {
-+  if (continuous_stream_ == nullptr) {
-+    return;
-+  }
++  const auto cmd = config_["exec"].asString();
 +
-+  restart_connection_.disconnect();
-+
-+  const auto& exec = config_["exec"];
-+  if (!exec.isString() || exec.asString().empty()) {
++  try {
++    continuous_stream_->start(cmd);
++  } catch (const Glib::SpawnError& e) {
 +    if (throw_on_failure) {
-+      throw std::invalid_argument("Ring: continuous process requires a non-empty exec string");
++      throw std::runtime_error("Unable to open " + cmd + ": " + e.what().raw());
 +    }
-+    return;
++    output_ = {.exit_code = 1, .out = ""};
++    dp.emit();
++    spdlog::error("Unable to restart {}: {}", name_, e.what().raw());
++    scheduleContinuousRestart();
++  } catch (const std::exception& e) {
++    if (throw_on_failure) {
++      throw;
++    }
++    output_ = {.exit_code = 1, .out = ""};
++    dp.emit();
++    spdlog::error("Unable to restart {}: {}", name_, e.what());
++    scheduleContinuousRestart();
 +  }
-+
-+  std::string cmd = exec.asString();
-+  fmt::dynamic_format_arg_store<fmt::format_context> store;
-+  store.push_ref(fmt::arg("name", name_));
-+  cmd = fmt::vformat(cmd, store);
-+  spdlog::debug("Ring: starting continuous exec: {}", cmd);
-+  continuous_stream_->start(cmd, output_name_);
 +}
 +
 +void Ring::handleContinuousProcessExit(int exit_code) {
-+  output_.exit_code = exit_code;
 +  if (exit_code != 0) {
-+    spdlog::warn("{}: continuous exec exited with code {}, restarting in 2s", name_, exit_code);
-+    output_.out.clear();
-+    text_.clear();
++    output_ = {.exit_code = exit_code, .out = ""};
++    dp.emit();
++    spdlog::error("{} stopped unexpectedly, is it endless?", name_);
 +  }
++
 +  scheduleContinuousRestart();
 +}
 +
 +void Ring::scheduleContinuousRestart() {
-+  if (continuous_stream_ == nullptr || continuous_stream_->is_running()) {
++  restart_connection_.disconnect();
++  if (!config_["restart-interval"].isNumeric() || config_["restart-interval"].asDouble() <= 0) {
++    // A non-positive restart-interval must not busy-respawn the script
++    // (that starves the GTK main loop); treat it as "do not restart".
 +    return;
 +  }
 +
-+  restart_connection_.disconnect();
-+  restart_connection_ = Glib::signal_timeout().connect_seconds(
-+      [this]() {
-+        try {
-+          startContinuousProcess(false);
-+        } catch (const std::exception& e) {
-+          spdlog::warn("{}: failed to restart continuous process: {}", name_, e.what());
-+          scheduleContinuousRestart();
-+        }
++  restart_connection_ = Glib::signal_timeout().connect(
++      [this] {
++        startContinuousProcess(false);
 +        return false;
 +      },
-+      2);
++      std::max(1U, static_cast<unsigned>(config_["restart-interval"].asDouble() * 1000)));
 +}
 +
 +void Ring::waitingWorker() {
