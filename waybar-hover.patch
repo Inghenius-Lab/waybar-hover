@@ -127,7 +127,7 @@ index a0c5b0d8..ec051e46 100644
      'src/modules/idle_inhibitor.cpp',
      'src/modules/image.cpp',
 diff --git a/src/AModule.cpp b/src/AModule.cpp
-index 65ffb433..c380a949 100644
+index 65ffb433..8033fe37 100644
 --- a/src/AModule.cpp
 +++ b/src/AModule.cpp
 @@ -102,6 +102,9 @@ AModule::~AModule() {
@@ -140,7 +140,7 @@ index 65ffb433..c380a949 100644
    for (const auto& pid : pid_children_) {
      if (pid != -1) {
        killpg(pid, SIGTERM);
-@@ -175,6 +178,17 @@ bool AModule::handleMouseEnter(GdkEventCrossing* const& e) {
+@@ -175,6 +178,23 @@ bool AModule::handleMouseEnter(GdkEventCrossing* const& e) {
      setCursor("pointer");
    }
  
@@ -149,8 +149,14 @@ index 65ffb433..c380a949 100644
 +  // exposes hover to modules; this is what lets a pill react when the
 +  // cursor enters it (e.g. show its level bar while hovered).
 +  // Entering cancels any pending hover-out dispatch (see the
-+  // debounce in handleMouseLeave).
++  // debounce in handleMouseLeave). Crossings to/from a descendant
++  // window (detail INFERIOR/VIRTUAL — e.g. the ring canvas, which
++  // owns its GdkWindow inside this event box) are NOT real entries:
++  // the pointer never left the module, so don't re-fire on-hover.
 +  hover_out_conn_.disconnect();
++  if (e->detail == GDK_NOTIFY_INFERIOR || e->detail == GDK_NOTIFY_VIRTUAL) {
++    return false;
++  }
 +  if (config_["on-hover"].isString()) {
 +    pid_children_.push_back(util::command::forkExec(config_["on-hover"].asString()));
 +  }
@@ -158,7 +164,7 @@ index 65ffb433..c380a949 100644
    return false;
  }
  
-@@ -188,6 +202,27 @@ bool AModule::handleMouseLeave(GdkEventCrossing* const& e) {
+@@ -188,6 +208,36 @@ bool AModule::handleMouseLeave(GdkEventCrossing* const& e) {
      setCursor("default");
    }
  
@@ -172,6 +178,15 @@ index 65ffb433..c380a949 100644
 +  // still over the module — the bar must only hide after the
 +  // pointer has really left (the script's own grace period
 +  // then counts from a truthful leave).
++  // Root cause found later the same day: the ring canvas is a
++  // Gtk::DrawingArea with its OWN GdkWindow inside this event
++  // box. Moving the pointer onto the icon therefore reads as
++  // leaving the event box "to an inferior window" — the bar
++  // hid while the pointer sat on the icon itself. Inferior /
++  // virtual crossings are internal moves: ignore them.
++  if (e->detail == GDK_NOTIFY_INFERIOR || e->detail == GDK_NOTIFY_VIRTUAL) {
++    return false;
++  }
 +  if (config_["on-hover-out"].isString()) {
 +    hover_out_conn_.disconnect();
 +    const std::string cmd = config_["on-hover-out"].asString();
