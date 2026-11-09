@@ -140,10 +140,10 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..afed8f29
+index 00000000..dbcff181
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,139 @@
 +#pragma once
 +
 +#include <array>
@@ -189,6 +189,7 @@ index 00000000..afed8f29
 +  void setAdn(bool adn);
 +  void setPanal(bool panal);
 +  void setHexagonos(bool hexagonos);
++  void setOleaje(bool oleaje);
 +
 + protected:
 +  bool on_draw(const Cairo::RefPtr<Cairo::Context>& cr) override;
@@ -201,6 +202,7 @@ index 00000000..afed8f29
 +  void drawAdn(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  void drawPanal(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  void drawHexagonos(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
++  void drawOleaje(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  bool resolveColor(const std::string& name, double& r, double& g, double& b);
 +  bool gradientColor(double t, double& r, double& g, double& b);
 +
@@ -222,6 +224,7 @@ index 00000000..afed8f29
 +  bool adn_ = false;
 +  bool panal_ = false;
 +  bool hexagonos_ = false;
++  bool oleaje_ = false;
 +  int tick_ = 0;
 +  bool inner_right_ = false;
 +  std::string color_{"waybar-accent"};
@@ -1047,10 +1050,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..16819e41
+index 00000000..479c1926
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,1012 @@
+@@ -0,0 +1,1078 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1151,6 +1154,13 @@ index 00000000..16819e41
 +void WaveCanvas::setHexagonos(bool hexagonos) {
 +  if (hexagonos != hexagonos_) {
 +    hexagonos_ = hexagonos;
++    queue_draw();
++  }
++}
++
++void WaveCanvas::setOleaje(bool oleaje) {
++  if (oleaje != oleaje_) {
++    oleaje_ = oleaje;
 +    queue_draw();
 +  }
 +}
@@ -1280,6 +1290,10 @@ index 00000000..16819e41
 +  }
 +  if (hexagonos_) {
 +    drawHexagonos(cr, w, h);
++    return false;
++  }
++  if (oleaje_) {
++    drawOleaje(cr, w, h);
 +    return false;
 +  }
 +  const double min_d = 3.2;
@@ -1579,6 +1593,57 @@ index 00000000..16819e41
 +      cr->close_path();
 +      cr->fill();
 +    }
++  }
++}
++
++
++// ── Oleaje (musica; eleccion S1 suya, 2026-11-09) ─────────────
++// Tres mareas llenas superpuestas, de atras hacia adelante: cada
++// capa es una silueta suave cuya altura manda el nivel
++// interpolado, con una deriva senoidal lenta propia (las capas
++// se cruzan entre si), y cada capa de adelante es mas baja y mas
++// opaca. Relleno con el patron lineal del degradado dinamico,
++// como el ADN: tres rellenos por fotograma.
++void WaveCanvas::drawOleaje(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h) {
++  const std::vector<double>& vals = disp_.size() == values_.size() ? disp_ : values_;
++  if (vals.empty()) {
++    return;
++  }
++  struct Capa {
++    double amp;
++    double alfa;
++    double desp;
++    double vel;
++  };
++  const Capa capas[3] = {{6.5, 0.35, 0.0, 0.020}, {5.2, 0.55, 2.2, 0.027}, {4.0, 0.85, 4.4, 0.034}};
++  const int MUESTRAS = 80;
++  for (const auto& capa : capas) {
++    auto pat = Cairo::LinearGradient::create(0, 0, w, 0);
++    const int PARADAS = 24;
++    for (int k = 0; k <= PARADAS; ++k) {
++      double r, g, b;
++      if (!gradientColor(static_cast<double>(k) / PARADAS, r, g, b)) {
++        r = g = b = 1.0;
++      }
++      pat->add_color_stop_rgba(static_cast<double>(k) / PARADAS, r, g, b, capa.alfa);
++    }
++    cr->set_source(pat);
++    const double fase = tick_ * capa.vel;
++    const double base = h * 0.60 + capa.desp;
++    for (int s = 0; s <= MUESTRAS; ++s) {
++      const double x = static_cast<double>(s) / MUESTRAS;
++      const double v = waveNivelEn(vals, x);
++      const double y = base - v * capa.amp + std::sin(x * M_PI * 3.0 + fase) * 1.3;
++      if (s == 0) {
++        cr->move_to(0, y);
++      } else {
++        cr->line_to(x * w, y);
++      }
++    }
++    cr->line_to(w, h);
++    cr->line_to(0, h);
++    cr->close_path();
++    cr->fill();
 +  }
 +}
 +
@@ -1982,6 +2047,7 @@ index 00000000..16819e41
 +    bool adn = false;
 +    bool panal = false;
 +    bool hexagonos = false;
++    bool oleaje = false;
 +    for (auto const& c : class_) {
 +      if (c == "mic") {
 +        mic = true;
@@ -1997,6 +2063,8 @@ index 00000000..16819e41
 +        panal = true;
 +      } else if (c == "hexagonos") {
 +        hexagonos = true;
++      } else if (c == "oleaje") {
++        oleaje = true;
 +      }
 +    }
 +    canvas_.setOnda(mic);
@@ -2006,6 +2074,7 @@ index 00000000..16819e41
 +    canvas_.setAdn(adn);
 +    canvas_.setPanal(panal);
 +    canvas_.setHexagonos(hexagonos);
++    canvas_.setOleaje(oleaje);
 +    canvas_.setValues(values_);
 +    if (tooltipEnabled()) {
 +      event_box_.set_tooltip_markup(tooltip_);
