@@ -140,10 +140,10 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..61da533d
+index 00000000..1ab0a0ff
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,130 @@
 +#pragma once
 +
 +#include <array>
@@ -186,6 +186,7 @@ index 00000000..61da533d
 +  void setChispas(bool chispas);
 +  void setSimbolos(bool simbolos);
 +  void setCuerdas(bool cuerdas);
++  void setAdn(bool adn);
 +
 + protected:
 +  bool on_draw(const Cairo::RefPtr<Cairo::Context>& cr) override;
@@ -195,6 +196,7 @@ index 00000000..61da533d
 +  void drawChispas(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  void drawSimbolos(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  void drawCuerdas(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
++  void drawAdn(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  bool resolveColor(const std::string& name, double& r, double& g, double& b);
 +  bool gradientColor(double t, double& r, double& g, double& b);
 +
@@ -213,6 +215,7 @@ index 00000000..61da533d
 +  bool chispas_ = false;
 +  bool simbolos_ = false;
 +  bool cuerdas_ = false;
++  bool adn_ = false;
 +  int tick_ = 0;
 +  bool inner_right_ = false;
 +  std::string color_{"waybar-accent"};
@@ -1038,10 +1041,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..7cdd58d2
+index 00000000..fae572e3
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,810 @@
+@@ -0,0 +1,885 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1121,6 +1124,13 @@ index 00000000..7cdd58d2
 +void WaveCanvas::setCuerdas(bool cuerdas) {
 +  if (cuerdas != cuerdas_) {
 +    cuerdas_ = cuerdas;
++    queue_draw();
++  }
++}
++
++void WaveCanvas::setAdn(bool adn) {
++  if (adn != adn_) {
++    adn_ = adn;
 +    queue_draw();
 +  }
 +}
@@ -1238,6 +1248,10 @@ index 00000000..7cdd58d2
 +  }
 +  if (cuerdas_) {
 +    drawCuerdas(cr, w, h);
++    return false;
++  }
++  if (adn_) {
++    drawAdn(cr, w, h);
 +    return false;
 +  }
 +  const double min_d = 3.2;
@@ -1380,6 +1394,66 @@ index 00000000..7cdd58d2
 +      px = x * w;
 +      py = y;
 +    }
++  }
++}
++
++
++// ── ADN grueso (musica; eleccion Q10 suya, 2026-11-09) ────────
++// Dos cintas gruesas entrelazadas a todo lo ancho: el centro de
++// cada una cruza el eje dos veces por lienzo con un vaiven lento
++// propio, y su grosor lo manda el nivel local interpolado. El
++// relleno es un patron lineal de Cairo muestreado del degradado
++// dinamico (25 paradas por fotograma, con la cache de paradas de
++// la nota 48 detras): el color rueda como siempre sin pintar por
++// tramos. Dos rellenos por fotograma: lo mas barato de la casa.
++void WaveCanvas::drawAdn(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h) {
++  const std::vector<double>& vals = disp_.size() == values_.size() ? disp_ : values_;
++  const size_t n = vals.size();
++  if (n == 0) {
++    return;
++  }
++  auto nivel_en = [&vals, n](double x) {
++    const double pos = std::clamp(x, 0.0, 1.0) * static_cast<double>(n - 1);
++    const size_t j = static_cast<size_t>(pos);
++    double f = pos - static_cast<double>(j);
++    f = (1.0 - std::cos(f * M_PI)) / 2.0;
++    const double a = vals[j];
++    const double b = vals[std::min(n - 1, j + 1)];
++    return std::clamp(a * (1.0 - f) + b * f, 0.0, 1.0);
++  };
++  auto pat = Cairo::LinearGradient::create(0, 0, w, 0);
++  const int PARADAS = 24;
++  for (int k = 0; k <= PARADAS; ++k) {
++    double r, g, b;
++    if (!gradientColor(static_cast<double>(k) / PARADAS, r, g, b)) {
++      r = g = b = 1.0;
++    }
++    pat->add_color_stop_rgba(static_cast<double>(k) / PARADAS, r, g, b, 0.95);
++  }
++  cr->set_source(pat);
++  const int MUESTRAS = 64;
++  for (int cinta = 0; cinta < 2; ++cinta) {
++    const double fase = tick_ * 0.03 + cinta * M_PI;
++    for (int s = 0; s <= MUESTRAS; ++s) {
++      const double x = static_cast<double>(s) / MUESTRAS;
++      const double v = nivel_en(x);
++      const double yc = h / 2 + std::sin(x * M_PI * 4.0 + fase) * (1.4 + v * 3.4);
++      const double gr = (1.3 + v * 3.0) / 2;
++      if (s == 0) {
++        cr->move_to(x * w, yc - gr);
++      } else {
++        cr->line_to(x * w, yc - gr);
++      }
++    }
++    for (int s = MUESTRAS; s >= 0; --s) {
++      const double x = static_cast<double>(s) / MUESTRAS;
++      const double v = nivel_en(x);
++      const double yc = h / 2 + std::sin(x * M_PI * 4.0 + fase) * (1.4 + v * 3.4);
++      const double gr = (1.3 + v * 3.0) / 2;
++      cr->line_to(x * w, yc + gr);
++    }
++    cr->close_path();
++    cr->fill();
 +  }
 +}
 +
@@ -1780,6 +1854,7 @@ index 00000000..7cdd58d2
 +    bool chispas = false;
 +    bool simbolos = false;
 +    bool cuerdas = false;
++    bool adn = false;
 +    for (auto const& c : class_) {
 +      if (c == "mic") {
 +        mic = true;
@@ -1789,12 +1864,15 @@ index 00000000..7cdd58d2
 +        simbolos = true;
 +      } else if (c == "cuerdas") {
 +        cuerdas = true;
++      } else if (c == "adn") {
++        adn = true;
 +      }
 +    }
 +    canvas_.setOnda(mic);
 +    canvas_.setChispas(chispas);
 +    canvas_.setSimbolos(simbolos);
 +    canvas_.setCuerdas(cuerdas);
++    canvas_.setAdn(adn);
 +    canvas_.setValues(values_);
 +    if (tooltipEnabled()) {
 +      event_box_.set_tooltip_markup(tooltip_);
