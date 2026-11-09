@@ -140,10 +140,10 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..1ab0a0ff
+index 00000000..afed8f29
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,136 @@
 +#pragma once
 +
 +#include <array>
@@ -187,6 +187,8 @@ index 00000000..1ab0a0ff
 +  void setSimbolos(bool simbolos);
 +  void setCuerdas(bool cuerdas);
 +  void setAdn(bool adn);
++  void setPanal(bool panal);
++  void setHexagonos(bool hexagonos);
 +
 + protected:
 +  bool on_draw(const Cairo::RefPtr<Cairo::Context>& cr) override;
@@ -197,6 +199,8 @@ index 00000000..1ab0a0ff
 +  void drawSimbolos(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  void drawCuerdas(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  void drawAdn(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
++  void drawPanal(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
++  void drawHexagonos(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  bool resolveColor(const std::string& name, double& r, double& g, double& b);
 +  bool gradientColor(double t, double& r, double& g, double& b);
 +
@@ -216,6 +220,8 @@ index 00000000..1ab0a0ff
 +  bool simbolos_ = false;
 +  bool cuerdas_ = false;
 +  bool adn_ = false;
++  bool panal_ = false;
++  bool hexagonos_ = false;
 +  int tick_ = 0;
 +  bool inner_right_ = false;
 +  std::string color_{"waybar-accent"};
@@ -1041,10 +1047,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..fae572e3
+index 00000000..16819e41
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,885 @@
+@@ -0,0 +1,1012 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1131,6 +1137,20 @@ index 00000000..fae572e3
 +void WaveCanvas::setAdn(bool adn) {
 +  if (adn != adn_) {
 +    adn_ = adn;
++    queue_draw();
++  }
++}
++
++void WaveCanvas::setPanal(bool panal) {
++  if (panal != panal_) {
++    panal_ = panal;
++    queue_draw();
++  }
++}
++
++void WaveCanvas::setHexagonos(bool hexagonos) {
++  if (hexagonos != hexagonos_) {
++    hexagonos_ = hexagonos;
 +    queue_draw();
 +  }
 +}
@@ -1252,6 +1272,14 @@ index 00000000..fae572e3
 +  }
 +  if (adn_) {
 +    drawAdn(cr, w, h);
++    return false;
++  }
++  if (panal_) {
++    drawPanal(cr, w, h);
++    return false;
++  }
++  if (hexagonos_) {
++    drawHexagonos(cr, w, h);
 +    return false;
 +  }
 +  const double min_d = 3.2;
@@ -1454,6 +1482,103 @@ index 00000000..fae572e3
 +    }
 +    cr->close_path();
 +    cr->fill();
++  }
++}
++
++
++// ── Nivel local interpolado (compartido por cuerdas/adn) ─────
++static double waveNivelEn(const std::vector<double>& vals, double x) {
++  const size_t n = vals.size();
++  const double pos = std::clamp(x, 0.0, 1.0) * static_cast<double>(n - 1);
++  const size_t j = static_cast<size_t>(pos);
++  double f = pos - static_cast<double>(j);
++  f = (1.0 - std::cos(f * M_PI)) / 2.0;
++  const double a = vals[j];
++  const double b = vals[std::min(n - 1, j + 1)];
++  return std::clamp(a * (1.0 - f) + b * f, 0.0, 1.0);
++}
++
++// ── Panal (musica; eleccion R12 suya, 2026-11-09) ─────────────
++// Rejilla de hexagonos de punta arriba que respira con el nivel
++// de su columna: cada celda se escala con el espectro local y un
++// brillo lento que recorre las columnas. ~24 poligonos por
++// fotograma, color del degradado dinamico por celda.
++void WaveCanvas::drawPanal(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h) {
++  const std::vector<double>& vals = disp_.size() == values_.size() ? disp_ : values_;
++  if (vals.empty()) {
++    return;
++  }
++  const double r = 5.8;
++  const double dx = std::sqrt(3.0) * r * 1.04;
++  const double dy = 1.5 * r;
++  int col = 0;
++  for (double cx = r * 0.4; cx < w + r; cx += dx, ++col) {
++    const double v = waveNivelEn(vals, cx / w);
++    const double brillo = 0.92 + 0.08 * std::sin(tick_ * 0.05 + col * 0.9);
++    double rr = r * (0.40 + v * 0.58) * brillo;
++    double r1, g1, b1;
++    if (!gradientColor(std::clamp(cx / w, 0.0, 1.0), r1, g1, b1)) {
++      r1 = g1 = b1 = 1.0;
++    }
++    cr->set_source_rgba(r1, g1, b1, 0.92);
++    for (int fila = 0; fila < 3; ++fila) {
++      const double cy = r + fila * dy + (col % 2 ? dy / 2 : 0.0);
++      if (cy - r > h) {
++        continue;
++      }
++      for (int k = 0; k < 6; ++k) {
++        const double ang = M_PI / 3 * k - M_PI / 2;
++        const double px = cx + std::cos(ang) * rr;
++        const double py = cy + std::sin(ang) * rr;
++        if (k == 0) {
++          cr->move_to(px, py);
++        } else {
++          cr->line_to(px, py);
++        }
++      }
++      cr->close_path();
++      cr->fill();
++    }
++  }
++}
++
++// ── Hexagonos (musica; eleccion R7 suya, 2026-11-09) ──────────
++// Un hexagono por banda, centrado, cuyo radio manda el nivel
++// interpolado; dentro, otro hexagono al 55 % mas tenue como
++// faceta. Color del degradado dinamico en la posicion de la
++// banda.
++void WaveCanvas::drawHexagonos(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h) {
++  const std::vector<double>& vals = disp_.size() == values_.size() ? disp_ : values_;
++  const size_t n = vals.size();
++  if (n == 0) {
++    return;
++  }
++  for (size_t i = 0; i < n; ++i) {
++    const double t = (static_cast<double>(i) + 0.5) / static_cast<double>(n);
++    const double cx = t * w;
++    const double cy = h / 2;
++    const double v = std::clamp(vals[i], 0.0, 1.0);
++    const double rr = 2.2 + v * 3.6;
++    double r1, g1, b1;
++    if (!gradientColor(t, r1, g1, b1)) {
++      r1 = g1 = b1 = 1.0;
++    }
++    for (int capa = 0; capa < 2; ++capa) {
++      const double rad = rr * (capa == 0 ? 1.0 : 0.55);
++      cr->set_source_rgba(r1, g1, b1, capa == 0 ? 0.95 : 0.5);
++      for (int k = 0; k < 6; ++k) {
++        const double ang = M_PI / 3 * k - M_PI / 2;
++        const double px = cx + std::cos(ang) * rad;
++        const double py = cy + std::sin(ang) * rad;
++        if (k == 0) {
++          cr->move_to(px, py);
++        } else {
++          cr->line_to(px, py);
++        }
++      }
++      cr->close_path();
++      cr->fill();
++    }
 +  }
 +}
 +
@@ -1855,6 +1980,8 @@ index 00000000..fae572e3
 +    bool simbolos = false;
 +    bool cuerdas = false;
 +    bool adn = false;
++    bool panal = false;
++    bool hexagonos = false;
 +    for (auto const& c : class_) {
 +      if (c == "mic") {
 +        mic = true;
@@ -1866,6 +1993,10 @@ index 00000000..fae572e3
 +        cuerdas = true;
 +      } else if (c == "adn") {
 +        adn = true;
++      } else if (c == "panal") {
++        panal = true;
++      } else if (c == "hexagonos") {
++        hexagonos = true;
 +      }
 +    }
 +    canvas_.setOnda(mic);
@@ -1873,6 +2004,8 @@ index 00000000..fae572e3
 +    canvas_.setSimbolos(simbolos);
 +    canvas_.setCuerdas(cuerdas);
 +    canvas_.setAdn(adn);
++    canvas_.setPanal(panal);
++    canvas_.setHexagonos(hexagonos);
 +    canvas_.setValues(values_);
 +    if (tooltipEnabled()) {
 +      event_box_.set_tooltip_markup(tooltip_);
