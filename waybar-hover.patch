@@ -140,10 +140,10 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..f91cbf83
+index 00000000..6c56538e
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,145 @@
 +#pragma once
 +
 +#include <array>
@@ -208,6 +208,8 @@ index 00000000..f91cbf83
 +  bool resolveColor(const std::string& name, double& r, double& g, double& b);
 +  bool gradientColor(double t, double& r, double& g, double& b);
 +  bool campoColor(double u, double& r, double& g, double& b);
++  bool campoColorVertical(double y, double h, double& r, double& g, double& b);
++  const std::vector<std::array<double, 3>>* paradas();
 +
 +  std::vector<double> values_;
 +  // Interpolated display values (2026-11-09): the dots draw these,
@@ -1054,10 +1056,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..1a672239
+index 00000000..2e9e326c
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,1356 @@
+@@ -0,0 +1,1361 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1103,19 +1105,15 @@ index 00000000..1a672239
 +struct CampoDegradado {
 +  struct Nudo {
 +    double pos;
-+    int color;
++    double colorf;
 +    double vel;
-+    double prox_color;
++    double vel_color;
 +    double prox_vel;
 +  };
 +  std::vector<Nudo> nudos;
 +  bool iniciado = false;
-+  double flujo = 1.0;
-+  double flujo_obj = 1.0;
-+  double prox_giro = 12.0;
-+  int orient = 0;  // 0 = a lo largo, 1 = vertical
-+  double prox_orient = 24.0;
-+  int dir_y = 1;
++  double resp_fase = 0.0;
++  double escala_ = 0.95;
 +  std::mt19937 rng;
 +  std::chrono::steady_clock::time_point ultimo{};
 +
@@ -1125,12 +1123,11 @@ index 00000000..1a672239
 +    rng.seed(static_cast<unsigned>(
 +        std::chrono::steady_clock::now().time_since_epoch().count()));
 +    const double ps[5] = {0.03, 0.30, 0.52, 0.79, 0.93};
-+    const int cs[5] = {0, 2, 1, 2, 0};
++    const double cs[5] = {0.0, 2.0, 1.0, 2.0, 0.4};
 +    for (int i = 0; i < 5; ++i) {
-+      nudos.push_back({ps[i], cs[i], azar(0.010, 0.030), azar(10.0, 30.0), azar(6.0, 16.0)});
++      const double vc = azar(0.006, 0.016) * ((azar(0.0, 1.0) < 0.5) ? -1.0 : 1.0);
++      nudos.push_back({ps[i], cs[i], azar(0.004, 0.012), vc, azar(8.0, 20.0)});
 +    }
-+    prox_giro = azar(9.0, 18.0);
-+    prox_orient = azar(18.0, 30.0);
 +    iniciado = true;
 +  }
 +
@@ -1149,41 +1146,25 @@ index 00000000..1a672239
 +    if (dt > 0.1) {
 +      dt = 0.1;
 +    }
-+    // El sentido se invierte suavemente (nunca un salto).
-+    const double paso = dt * 1.1;
-+    if (flujo < flujo_obj) {
-+      flujo = std::min(flujo_obj, flujo + paso);
-+    } else if (flujo > flujo_obj) {
-+      flujo = std::max(flujo_obj, flujo - paso);
-+    }
-+    prox_giro -= dt;
-+    if (prox_giro <= 0.0) {
-+      flujo_obj = -flujo_obj;
-+      prox_giro = azar(9.0, 20.0);
-+    }
-+    prox_orient -= dt;
-+    if (prox_orient <= 0.0) {
-+      orient = (azar(0.0, 1.0) < 0.62) ? 0 : 1;
-+      if (orient == 1) {
-+        dir_y = (azar(0.0, 1.0) < 0.5) ? 1 : -1;
-+      }
-+      prox_orient = azar(14.0, 30.0);
-+    }
-+    const double factor = (orient == 1) ? 0.35 : 1.0;
++    // Respiracion (2026-11-09, a su pedido: el degradado
++    // vertical se expande y se contrae como una respiracion
++    // natural, continua): la escala oscila con un seno de
++    // periodo ~8 s entre 0,55 y 1,35. Los nudos derivan
++    // despacio y su color TAMBIEN deriva de forma continua
++    // por la paleta (colorf fraccionario): ningun cambio es
++    // discreto, asi que nada salta a la vista jamas.
++    resp_fase += dt * (2.0 * M_PI / 8.0);
++    escala_ = 0.95 + 0.40 * std::sin(resp_fase);
 +    for (auto& n : nudos) {
-+      n.pos = std::fmod(n.pos + n.vel * flujo * factor * dt, 1.0);
++      n.pos = std::fmod(n.pos + n.vel * dt, 1.0);
 +      if (n.pos < 0.0) {
 +        n.pos += 1.0;
 +      }
-+      n.prox_color -= dt;
-+      if (n.prox_color <= 0.0) {
-+        n.color = std::uniform_int_distribution<int>(0, 2)(rng);
-+        n.prox_color = azar(14.0, 38.0);
-+      }
++      n.colorf += n.vel_color * dt;
 +      n.prox_vel -= dt;
 +      if (n.prox_vel <= 0.0) {
-+        n.vel = azar(0.008, 0.034);
-+        n.prox_vel = azar(6.0, 16.0);
++        n.vel = azar(0.003, 0.013);
++        n.prox_vel = azar(8.0, 20.0);
 +      }
 +    }
 +  }
@@ -1222,11 +1203,29 @@ index 00000000..1a672239
 +    }
 +    double f = std::clamp(du / span, 0.0, 1.0);
 +    f = f * f * (3.0 - 2.0 * f);
-+    const auto& ca = stops[static_cast<size_t>(a->color) % stops.size()];
-+    const auto& cb = stops[static_cast<size_t>(bn->color) % stops.size()];
-+    r = ca[0] + (cb[0] - ca[0]) * f;
-+    g = ca[1] + (cb[1] - ca[1]) * f;
-+    b = ca[2] + (cb[2] - ca[2]) * f;
++    double ar, ag, ab, br, bg, bb;
++    colorNudo(a->colorf, stops, ar, ag, ab);
++    colorNudo(bn->colorf, stops, br, bg, bb);
++    r = ar + (br - ar) * f;
++    g = ag + (bg - ag) * f;
++    b = ab + (bb - ab) * f;
++  }
++
++  // Color de un nudo: su posicion fraccionaria en la paleta
++  // ciclica (mezcla continua entre dos paradas vecinas).
++  void colorNudo(double cf, const std::vector<std::array<double, 3>>& stops, double& r, double& g,
++                 double& b) const {
++    const double n = static_cast<double>(stops.size());
++    double p = std::fmod(cf, n);
++    if (p < 0.0) {
++      p += n;
++    }
++    const size_t i = static_cast<size_t>(p) % stops.size();
++    const size_t j = (i + 1) % stops.size();
++    const double f = p - std::floor(p);
++    r = stops[i][0] + (stops[j][0] - stops[i][0]) * f;
++    g = stops[i][1] + (stops[j][1] - stops[i][1]) * f;
++    b = stops[i][2] + (stops[j][2] - stops[i][2]) * f;
 +  }
 +};
 +
@@ -1343,14 +1342,10 @@ index 00000000..1a672239
 +                    r, g, b);
 +}
 +
-+// Color del campo aleatorio compartido en la coordenada u (sin
-+// espejo: u ya viene medida como la necesita quien llama). Las
-+// paradas se resuelven SIEMPRE en el mismo orden canonico
-+// (acento, contenedor, terciario) para los dos lienzos.
-+bool WaveCanvas::campoColor(double u, double& r, double& g, double& b) {
-+  // Cached stops (2026-11-09): resolve at most twice a second;
-+  // a matugen theme swap reloads the bar anyway, so staleness is
-+  // bounded and invisible.
++// Paradas del tema en orden canonico fijo (acento, contenedor,
++// terciario), resueltas como mucho dos veces por segundo: los
++// dos lienzos comparten asi exactamente los mismos colores.
++const std::vector<std::array<double, 3>>* WaveCanvas::paradas() {
 +  if (!stops_ok_ || tick_ - stops_tick_ >= 20) {
 +    static const char* const CANON[3] = {"waybar-accent", "waybar-primary-container",
 +                                         "waybar-tertiary"};
@@ -1364,18 +1359,48 @@ index 00000000..1a672239
 +    stops_tick_ = tick_;
 +    stops_ok_ = true;
 +  }
-+  const std::vector<std::array<double, 3>>& stops = stops_cache_;
-+  if (stops.empty()) {
++  if (stops_cache_.empty()) {
++    return nullptr;
++  }
++  return &stops_cache_;
++}
++
++// Color del campo aleatorio compartido en la coordenada u (sin
++// espejo: u ya viene medida como la necesita quien llama).
++bool WaveCanvas::campoColor(double u, double& r, double& g, double& b) {
++  const auto* stops = paradas();
++  if (stops == nullptr) {
 +    return false;
 +  }
-+  if (stops.size() == 1) {
-+    r = stops[0][0];
-+    g = stops[0][1];
-+    b = stops[0][2];
++  if (stops->size() == 1) {
++    r = (*stops)[0][0];
++    g = (*stops)[0][1];
++    b = (*stops)[0][2];
 +    return true;
 +  }
 +  campo_degradado.avanzar();
-+  campo_degradado.muestra(u, stops, r, g, b);
++  campo_degradado.muestra(u, *stops, r, g, b);
++  return true;
++}
++
++// Muestra VERTICAL del campo para las siluetas (onda y estela):
++// la coordenada es la distancia a la linea central del lienzo,
++// escalada por la respiracion — el degradado se expande y se
++// contrae desde el centro, igual en los dos lienzos.
++bool WaveCanvas::campoColorVertical(double y, double h, double& r, double& g, double& b) {
++  const auto* stops = paradas();
++  if (stops == nullptr) {
++    return false;
++  }
++  if (stops->size() == 1) {
++    r = (*stops)[0][0];
++    g = (*stops)[0][1];
++    b = (*stops)[0][2];
++    return true;
++  }
++  campo_degradado.avanzar();
++  const double d = std::clamp(std::abs(y - h / 2.0) / (h / 2.0), 0.0, 1.0);
++  campo_degradado.muestra(d * campo_degradado.escala_, *stops, r, g, b);
 +  return true;
 +}
 +
@@ -1547,32 +1572,23 @@ index 00000000..1a672239
 +      const double taper = ec * ec * (3.0 - 2.0 * ec);
 +      const double v = std::clamp(sm[i], 0.0, 1.0);
 +      const double th = (1.2 + v * (h - 9.0)) * capa.factor * (0.10 + 0.90 * taper);
-+      if (campo_degradado.orient == 1) {
-+        // Degradado VERTICAL (epocas aleatorias del campo): la
-+        // franja se pinta en 4 pisos, cada uno con el color del
-+        // campo a su altura en el lienzo; el sentido (de arriba
-+        // abajo o al reves) lo marca dir_y y es el mismo en los
-+        // dos lienzos.
-+        for (int piso = 0; piso < 4; ++piso) {
-+          const double y0 = mid - th / 2 + th * piso / 4.0;
-+          const double vg = (y0 + th / 8.0) / h;
++        // Degradado VERTICAL que respira (2026-11-09, a su
++        // pedido: solo vertical, nada de horizontales): la
++        // franja se pinta en 6 pisos y cada piso toma el color
++        // del campo a su ALTURA ABSOLUTA en el lienzo, con la
++        // respiracion expandiendo y contrayendo la muestra —
++        // tonos que se abren y se cierran suaves, sin estados
++        // ni saltos.
++        for (int piso = 0; piso < 6; ++piso) {
++          const double y0 = mid - th / 2 + th * piso / 6.0;
 +          double r, g, b;
-+          if (!campoColor(campo_degradado.dir_y > 0 ? vg : 1.0 - vg, r, g, b)) {
++          if (!campoColorVertical(y0 + th / 12.0, h, r, g, b)) {
 +            r = g = b = 1.0;
 +          }
 +          cr->set_source_rgba(r, g, b, capa.alfa * (0.20 + 0.80 * taper));
-+          cr->rectangle(x - paso / 2 - 0.4, y0, paso + 0.8, th / 4 + 0.8);
++          cr->rectangle(x - paso / 2 - 0.4, y0, paso + 0.8, th / 6 + 0.8);
 +          cr->fill();
 +        }
-+      } else {
-+        double r, g, b;
-+        if (!gradientColor(t, r, g, b)) {
-+          r = g = b = 1.0;
-+        }
-+        cr->set_source_rgba(r, g, b, capa.alfa * (0.20 + 0.80 * taper));
-+        cr->rectangle(x - paso / 2 - 0.4, mid - th / 2, paso + 0.8, th);
-+        cr->fill();
-+      }
 +    }
 +  }
 +}
@@ -1627,32 +1643,23 @@ index 00000000..1a672239
 +      const double taper = ec * ec * (3.0 - 2.0 * ec);
 +      const double v = std::clamp(sm[i], 0.0, 1.0);
 +      const double th = (1.2 + v * (h - 9.0)) * capa.factor * (0.10 + 0.90 * taper);
-+      if (campo_degradado.orient == 1) {
-+        // Degradado VERTICAL (epocas aleatorias del campo): la
-+        // franja se pinta en 4 pisos, cada uno con el color del
-+        // campo a su altura en el lienzo; el sentido (de arriba
-+        // abajo o al reves) lo marca dir_y y es el mismo en los
-+        // dos lienzos.
-+        for (int piso = 0; piso < 4; ++piso) {
-+          const double y0 = mid - th / 2 + th * piso / 4.0;
-+          const double vg = (y0 + th / 8.0) / h;
++        // Degradado VERTICAL que respira (2026-11-09, a su
++        // pedido: solo vertical, nada de horizontales): la
++        // franja se pinta en 6 pisos y cada piso toma el color
++        // del campo a su ALTURA ABSOLUTA en el lienzo, con la
++        // respiracion expandiendo y contrayendo la muestra —
++        // tonos que se abren y se cierran suaves, sin estados
++        // ni saltos.
++        for (int piso = 0; piso < 6; ++piso) {
++          const double y0 = mid - th / 2 + th * piso / 6.0;
 +          double r, g, b;
-+          if (!campoColor(campo_degradado.dir_y > 0 ? vg : 1.0 - vg, r, g, b)) {
++          if (!campoColorVertical(y0 + th / 12.0, h, r, g, b)) {
 +            r = g = b = 1.0;
 +          }
 +          cr->set_source_rgba(r, g, b, capa.alfa * (0.20 + 0.80 * taper));
-+          cr->rectangle(x - paso / 2 - 0.4, y0, paso + 0.8, th / 4 + 0.8);
++          cr->rectangle(x - paso / 2 - 0.4, y0, paso + 0.8, th / 6 + 0.8);
 +          cr->fill();
 +        }
-+      } else {
-+        double r, g, b;
-+        if (!gradientColor(t, r, g, b)) {
-+          r = g = b = 1.0;
-+        }
-+        cr->set_source_rgba(r, g, b, capa.alfa * (0.20 + 0.80 * taper));
-+        cr->rectangle(x - paso / 2 - 0.4, mid - th / 2, paso + 0.8, th);
-+        cr->fill();
-+      }
 +    }
 +  }
 +}
