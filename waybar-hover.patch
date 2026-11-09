@@ -351,10 +351,10 @@ index 86abb43d..82306b4f 100644
      }
 diff --git a/src/modules/ring.cpp b/src/modules/ring.cpp
 new file mode 100644
-index 00000000..5de0e8c0
+index 00000000..40cca2b3
 --- /dev/null
 +++ b/src/modules/ring.cpp
-@@ -0,0 +1,564 @@
+@@ -0,0 +1,571 @@
 +#include "modules/ring.hpp"
 +
 +#include <gtk/gtk.h>
@@ -593,6 +593,11 @@ index 00000000..5de0e8c0
 +  bar_label_.set_halign(Gtk::ALIGN_START);
 +  bar_label_.set_ellipsize(Pango::ELLIPSIZE_NONE);
 +  bar_box_.add(bar_label_);
++  // The label is born shown: the BOX gates its visibility. (A
++  // plain show() on the box does not show children, and a label
++  // measured while its chain is hidden reports width 0 — both
++  // verified with a standalone probe, 2026-11-08.)
++  bar_label_.show();
 +  bar_box_.set_no_show_all(true);
 +  bar_box_.set_size_request(0, -1);
 +  bar_box_.hide();
@@ -837,13 +842,15 @@ index 00000000..5de0e8c0
 +    canvas_.setPercentage(percentage_);
 +    if (!bar_.empty()) {
 +      if (bar_state_ == BarState::Closed || bar_state_ == BarState::Closing) {
-+        // (Re)open: measure the fresh markup and unroll to it.
++        // (Re)open: show the box FIRST (a label measured while
++        // its chain is hidden reports width 0), then measure the
++        // fresh markup and unroll to it.
 +        bar_label_.set_markup(bar_);
 +        bar_current_ = bar_;
++        bar_box_.show();
 +        int min_w = 0, nat_w = 0;
 +        bar_label_.get_preferred_width(min_w, nat_w);
 +        bar_target_w_ = static_cast<double>(nat_w) + 6.0;
-+        bar_box_.show();
 +        bar_state_ = BarState::Opening;
 +        startBarAnim();
 +      } else if (bar_ != bar_current_) {
