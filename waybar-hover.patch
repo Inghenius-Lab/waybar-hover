@@ -140,10 +140,10 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..03482efb
+index 00000000..0a20b583
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,114 @@
 +#pragma once
 +
 +#include <chrono>
@@ -183,6 +183,7 @@ index 00000000..03482efb
 +  void setOnda(bool onda);
 +  void setInnerRight(bool inner_right);
 +  void setChispas(bool chispas);
++  void setSimbolos(bool simbolos);
 +
 + protected:
 +  bool on_draw(const Cairo::RefPtr<Cairo::Context>& cr) override;
@@ -190,6 +191,7 @@ index 00000000..03482efb
 + private:
 +  void drawOnda(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  void drawChispas(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
++  void drawSimbolos(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  bool resolveColor(const std::string& name, double& r, double& g, double& b);
 +  bool gradientColor(double t, double& r, double& g, double& b);
 +
@@ -197,6 +199,7 @@ index 00000000..03482efb
 +  std::vector<std::vector<double>> hist_;
 +  bool onda_ = false;
 +  bool chispas_ = false;
++  bool simbolos_ = false;
 +  int tick_ = 0;
 +  bool inner_right_ = false;
 +  std::string color_{"waybar-accent"};
@@ -1008,10 +1011,10 @@ index 00000000..8383b52e
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..59e25a2c
+index 00000000..10de0617
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,635 @@
+@@ -0,0 +1,701 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1059,6 +1062,13 @@ index 00000000..59e25a2c
 +}
 +
 +void WaveCanvas::setInnerRight(bool inner_right) { inner_right_ = inner_right; }
++
++void WaveCanvas::setSimbolos(bool simbolos) {
++  if (simbolos != simbolos_) {
++    simbolos_ = simbolos;
++    queue_draw();
++  }
++}
 +
 +void WaveCanvas::setChispas(bool chispas) {
 +  if (chispas != chispas_) {
@@ -1151,6 +1161,10 @@ index 00000000..59e25a2c
 +    return false;
 +  }
 +  const double mid = h / 2.0;
++  if (simbolos_) {
++    drawSimbolos(cr, w, h);
++    return false;
++  }
 +  if (chispas_) {
 +    drawChispas(cr, w, h);
 +    return false;
@@ -1294,6 +1308,57 @@ index 00000000..59e25a2c
 +      cr->arc(cx + dx, mid + dy, pr, 0, 2 * M_PI);
 +      cr->fill();
 +    }
++  }
++}
++
++
++// ── Simbolos de idiomas (transcribiendo; R1, eleccion suya) ──
++// Animacion de carga: sin sonido no hay nivel; cada columna
++// muestra un glifo de un alfabeto distinto que cambia cada
++// ~0,5 s (hash de la columna y del tick, escalonado), en
++// negrita y con el degradado dinamico de siempre (fijo).
++// Pango resuelve la fuente de cada escritura por fallback.
++void WaveCanvas::drawSimbolos(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h) {
++  const size_t n = values_.size();
++  if (n == 0) {
++    return;
++  }
++  static const char* GLIFOS[] = {
++      "あ", "ア", "イ", "ウ", "エ", "語", "文", "字", "中", "韓",
++      "한", "글", "자", "Ω", "α", "λ", "Ψ", "Ж", "Д", "Я",
++      "Ф", "ع", "ش", "س", "م", "א", "ש", "ל", "Հ", "Ո",
++      "ა", "ქ", "অ", "ক", "ก",
++  };
++  const int total = static_cast<int>(sizeof(GLIFOS) / sizeof(GLIFOS[0]));
++  const double inset = 11.0;
++  const double span = w - 2 * inset;
++  const double mid = h / 2.0;
++  auto hash01 = [](int seed) {
++    unsigned x = static_cast<unsigned>(seed) * 2654435761u;
++    x ^= x >> 15;
++    x *= 2246822519u;
++    x ^= x >> 13;
++    return static_cast<double>(x & 0xFFFFFFu) / static_cast<double>(0x1000000u);
++  };
++  const int paso = tick_ / 10;
++  Pango::FontDescription fd("Sans Bold 12.5");
++  for (size_t i = 0; i < n; ++i) {
++    const double t = n > 1 ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.5;
++    const double cx = inset + span * t;
++    const int gi = static_cast<int>(hash01(static_cast<int>(i) * 31 + paso * 17 + static_cast<int>(i) * 7) * total) % total;
++    double r, g, b;
++    if (!gradientColor(t, r, g, b)) {
++      r = g = b = 1.0;
++    }
++    const double alfa = 0.55 + 0.45 * hash01(static_cast<int>(i) * 57 + paso * 3);
++    auto layout = create_pango_layout(GLIFOS[gi]);
++    layout->set_font_description(fd);
++    Pango::Rectangle ink, logical;
++    layout->get_pixel_extents(ink, logical);
++    cr->set_source_rgba(r, g, b, alfa);
++    cr->move_to(cx - ink.get_x() - ink.get_width() / 2.0,
++                mid - ink.get_y() - ink.get_height() / 2.0);
++    layout->show_in_cairo_context(cr);
 +  }
 +}
 +
@@ -1581,15 +1646,19 @@ index 00000000..59e25a2c
 +
 +    bool mic = false;
 +    bool chispas = false;
++    bool simbolos = false;
 +    for (auto const& c : class_) {
 +      if (c == "mic") {
 +        mic = true;
 +      } else if (c == "chispas") {
 +        chispas = true;
++      } else if (c == "simbolos") {
++        simbolos = true;
 +      }
 +    }
 +    canvas_.setOnda(mic);
 +    canvas_.setChispas(chispas);
++    canvas_.setSimbolos(simbolos);
 +    canvas_.setValues(values_);
 +    if (tooltipEnabled()) {
 +      event_box_.set_tooltip_markup(tooltip_);
