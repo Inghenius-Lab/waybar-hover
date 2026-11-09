@@ -1053,10 +1053,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..c3855345
+index 00000000..f0450b34
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,1154 @@
+@@ -0,0 +1,1162 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -2115,45 +2115,53 @@ index 00000000..c3855345
 +      onSoundFrame();
 +    }
 +
-+    bool mic = false;
-+    bool chispas = false;
-+    bool simbolos = false;
-+    bool cuerdas = false;
-+    bool adn = false;
-+    bool panal = false;
-+    bool hexagonos = false;
-+    bool oleaje = false;
-+    bool estela = false;
-+    for (auto const& c : class_) {
-+      if (c == "mic") {
-+        mic = true;
-+      } else if (c == "chispas") {
-+        chispas = true;
-+      } else if (c == "simbolos") {
-+        simbolos = true;
-+      } else if (c == "cuerdas") {
-+        cuerdas = true;
-+      } else if (c == "adn") {
-+        adn = true;
-+      } else if (c == "panal") {
-+        panal = true;
-+      } else if (c == "hexagonos") {
-+        hexagonos = true;
-+      } else if (c == "oleaje") {
-+        oleaje = true;
-+      } else if (c == "estela") {
-+        estela = true;
++    // En silencio el fotograma no trae diseno (solo la clase
++    // "hide"): NO se tocan los modos, para que el lienzo siga
++    // dibujando el diseno vigente y se desvanezca con los
++    // valores a cero, en vez de caer al dibujo por defecto —
++    // los puntos minimos que se veian como vestigio cuando la
++    // onda se ocultaba (observacion suya, 2026-11-09).
++    if (!silence) {
++      bool mic = false;
++      bool chispas = false;
++      bool simbolos = false;
++      bool cuerdas = false;
++      bool adn = false;
++      bool panal = false;
++      bool hexagonos = false;
++      bool oleaje = false;
++      bool estela = false;
++      for (auto const& c : class_) {
++        if (c == "mic") {
++          mic = true;
++        } else if (c == "chispas") {
++          chispas = true;
++        } else if (c == "simbolos") {
++          simbolos = true;
++        } else if (c == "cuerdas") {
++          cuerdas = true;
++        } else if (c == "adn") {
++          adn = true;
++        } else if (c == "panal") {
++          panal = true;
++        } else if (c == "hexagonos") {
++          hexagonos = true;
++        } else if (c == "oleaje") {
++          oleaje = true;
++        } else if (c == "estela") {
++          estela = true;
++        }
 +      }
++      canvas_.setOnda(mic);
++      canvas_.setChispas(chispas);
++      canvas_.setSimbolos(simbolos);
++      canvas_.setCuerdas(cuerdas);
++      canvas_.setAdn(adn);
++      canvas_.setPanal(panal);
++      canvas_.setHexagonos(hexagonos);
++      canvas_.setOleaje(oleaje);
++      canvas_.setEstela(estela);
 +    }
-+    canvas_.setOnda(mic);
-+    canvas_.setChispas(chispas);
-+    canvas_.setSimbolos(simbolos);
-+    canvas_.setCuerdas(cuerdas);
-+    canvas_.setAdn(adn);
-+    canvas_.setPanal(panal);
-+    canvas_.setHexagonos(hexagonos);
-+    canvas_.setOleaje(oleaje);
-+    canvas_.setEstela(estela);
 +    canvas_.setValues(values_);
 +    if (tooltipEnabled()) {
 +      event_box_.set_tooltip_markup(tooltip_);
