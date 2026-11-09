@@ -140,10 +140,10 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..dbcff181
+index 00000000..94978606
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,142 @@
 +#pragma once
 +
 +#include <array>
@@ -190,6 +190,7 @@ index 00000000..dbcff181
 +  void setPanal(bool panal);
 +  void setHexagonos(bool hexagonos);
 +  void setOleaje(bool oleaje);
++  void setEstela(bool estela);
 +
 + protected:
 +  bool on_draw(const Cairo::RefPtr<Cairo::Context>& cr) override;
@@ -203,6 +204,7 @@ index 00000000..dbcff181
 +  void drawPanal(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  void drawHexagonos(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  void drawOleaje(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
++  void drawEstela(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  bool resolveColor(const std::string& name, double& r, double& g, double& b);
 +  bool gradientColor(double t, double& r, double& g, double& b);
 +
@@ -225,6 +227,7 @@ index 00000000..dbcff181
 +  bool panal_ = false;
 +  bool hexagonos_ = false;
 +  bool oleaje_ = false;
++  bool estela_ = false;
 +  int tick_ = 0;
 +  bool inner_right_ = false;
 +  std::string color_{"waybar-accent"};
@@ -1050,10 +1053,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..479c1926
+index 00000000..c3855345
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,1078 @@
+@@ -0,0 +1,1154 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1091,7 +1094,7 @@ index 00000000..479c1926
 +        ++tick_;
 +        phase_ = std::fmod(phase_ + 0.0025, 1.0);
 +        if (!values_.empty()) {
-+          if (disp_.size() != values_.size() || onda_ || chispas_ || simbolos_) {
++          if (disp_.size() != values_.size() || onda_ || chispas_ || simbolos_ || estela_) {
 +            disp_ = values_;
 +          } else {
 +            for (size_t i = 0; i < disp_.size(); ++i) {
@@ -1161,6 +1164,13 @@ index 00000000..479c1926
 +void WaveCanvas::setOleaje(bool oleaje) {
 +  if (oleaje != oleaje_) {
 +    oleaje_ = oleaje;
++    queue_draw();
++  }
++}
++
++void WaveCanvas::setEstela(bool estela) {
++  if (estela != estela_) {
++    estela_ = estela;
 +    queue_draw();
 +  }
 +}
@@ -1296,6 +1306,10 @@ index 00000000..479c1926
 +    drawOleaje(cr, w, h);
 +    return false;
 +  }
++  if (estela_) {
++    drawEstela(cr, w, h);
++    return false;
++  }
 +  const double min_d = 3.2;
 +  const double max_d = std::min(20.0, h - 6.0);
 +  // Inset the columns by the max radius (+1 px of air) so the
@@ -1359,6 +1373,67 @@ index 00000000..479c1926
 +    double alfa;
 +  };
 +  const Capa capas[3] = {{6, 1.55, 0.15}, {3, 1.25, 0.30}, {0, 0.90, 0.95}};
++  const double margen = 4.0;
++  const double util = w - 2 * margen;
++  const double paso = util / (M - 1);
++  for (const auto& capa : capas) {
++    const std::vector<double>* src = &values_;
++    if (capa.ago > 0 && hist_.size() > capa.ago) {
++      src = &hist_[hist_.size() - 1 - capa.ago];
++    }
++    const auto sm = muestras(*src);
++    for (int i = 0; i < M; ++i) {
++      const double t = static_cast<double>(i) / (M - 1);
++      const double x = margen + t * util;
++      const double borde = std::min(t, 1.0 - t) / 0.16;
++      const double ec = std::clamp(borde, 0.0, 1.0);
++      const double taper = ec * ec * (3.0 - 2.0 * ec);
++      const double v = std::clamp(sm[i], 0.0, 1.0);
++      const double th = (1.2 + v * (h - 9.0)) * capa.factor * (0.10 + 0.90 * taper);
++      double r, g, b;
++      if (!gradientColor(t, r, g, b)) {
++        r = g = b = 1.0;
++      }
++      cr->set_source_rgba(r, g, b, capa.alfa * (0.20 + 0.80 * taper));
++      cr->rectangle(x - paso / 2 - 0.4, mid - th / 2, paso + 0.8, th);
++      cr->fill();
++    }
++  }
++}
++
++
++// ── Estela larga (musica; variante T3 de la onda, 2026-11-09) ─
++// La misma silueta de la onda del dictado (drawOnda no se toca:
++// es el diseno cerrado del micro), pero con CINCO capas de
++// historia en vez de tres: la estela se alarga y se suaviza
++// (atrasos 10/7/4/2/0, grosores crecientes hacia atras, alfas
++// decrecientes). Solo para la musica, clase «estela».
++void WaveCanvas::drawEstela(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h) {
++  const double mid = h / 2.0;
++  const int M = 72;
++  auto muestras = [M](const std::vector<double>& src) {
++    std::vector<double> out(M, 0.0);
++    const size_t n = src.size();
++    if (n == 0) {
++      return out;
++    }
++    for (int i = 0; i < M; ++i) {
++      const double x = static_cast<double>(i) / (M - 1) * static_cast<double>(n - 1);
++      const size_t j = static_cast<size_t>(x);
++      double f = x - static_cast<double>(j);
++      f = (1.0 - std::cos(f * M_PI)) / 2.0;
++      const double a = src[j];
++      const double b = src[std::min(n - 1, j + 1)];
++      out[i] = a * (1.0 - f) + b * f;
++    }
++    return out;
++  };
++  struct Capa {
++    size_t ago;
++    double factor;
++    double alfa;
++  };
++  const Capa capas[5] = {{10, 1.85, 0.08}, {7, 1.66, 0.13}, {4, 1.45, 0.20}, {2, 1.20, 0.33}, {0, 0.92, 0.95}};
 +  const double margen = 4.0;
 +  const double util = w - 2 * margen;
 +  const double paso = util / (M - 1);
@@ -2048,6 +2123,7 @@ index 00000000..479c1926
 +    bool panal = false;
 +    bool hexagonos = false;
 +    bool oleaje = false;
++    bool estela = false;
 +    for (auto const& c : class_) {
 +      if (c == "mic") {
 +        mic = true;
@@ -2065,6 +2141,8 @@ index 00000000..479c1926
 +        hexagonos = true;
 +      } else if (c == "oleaje") {
 +        oleaje = true;
++      } else if (c == "estela") {
++        estela = true;
 +      }
 +    }
 +    canvas_.setOnda(mic);
@@ -2075,6 +2153,7 @@ index 00000000..479c1926
 +    canvas_.setPanal(panal);
 +    canvas_.setHexagonos(hexagonos);
 +    canvas_.setOleaje(oleaje);
++    canvas_.setEstela(estela);
 +    canvas_.setValues(values_);
 +    if (tooltipEnabled()) {
 +      event_box_.set_tooltip_markup(tooltip_);
