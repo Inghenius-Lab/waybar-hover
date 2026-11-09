@@ -1011,10 +1011,10 @@ index 00000000..8383b52e
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..10de0617
+index 00000000..fb8700b9
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,701 @@
+@@ -0,0 +1,705 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1341,7 +1341,11 @@ index 00000000..10de0617
 +    return static_cast<double>(x & 0xFFFFFFu) / static_cast<double>(0x1000000u);
 +  };
 +  const int paso = tick_ / 10;
-+  Pango::FontDescription fd("Sans Bold 12.5");
++  // Tamano ABSOLUTO (13,5 px de tinta aprox.): en puntos, la
++  // resolucion del contexto lo inflaba al doble y los glifos
++  // se salian del lienzo (visto en pantalla el 2026-11-08).
++  Pango::FontDescription fd("Sans Bold");
++  fd.set_absolute_size(13.5 * 1024);  // 1024 = PANGO_SCALE
 +  for (size_t i = 0; i < n; ++i) {
 +    const double t = n > 1 ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.5;
 +    const double cx = inset + span * t;
