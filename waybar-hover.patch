@@ -12,10 +12,10 @@ index 3fea52f6..379b8722 100644
        {std::make_pair(1, GdkEventType::GDK_BUTTON_RELEASE), "on-click-release"},
 diff --git a/include/modules/ring.hpp b/include/modules/ring.hpp
 new file mode 100644
-index 00000000..42045f1f
+index 00000000..811e12da
 --- /dev/null
 +++ b/include/modules/ring.hpp
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,122 @@
 +#pragma once
 +
 +#include <chrono>
@@ -98,14 +98,22 @@ index 00000000..42045f1f
 +  // ends the clipped last dot: with the label as a merely packed
 +  // child, a full bar (two/three bars open at once) squeezed its
 +  // allocation and the final dot was cut mid-glyph.
-+  void startBarAnim();
-+  bool barAnimTick();
++  // The tween runs on the FRAME CLOCK with an easeInOutCubic
++  // curve over a fixed duration: the first exponential-lerp
++  // version lurched at the start, stepped unevenly against the
++  // render frames and dragged its tail — "brusco, como si se
++  // pegara". Frame-synced eased steps are what make it fluid.
++  void startBarReveal(double target, int dur_ms);
++  bool barTick(const Glib::RefPtr<Gdk::FrameClock>& clock);
 +  enum class BarState { Closed, Opening, Open, Closing };
 +  BarState bar_state_ = BarState::Closed;
 +  double bar_shown_w_ = 0.0;
++  double bar_from_w_ = 0.0;
 +  double bar_target_w_ = 0.0;
++  gint64 bar_t0_us_ = 0;
++  int bar_dur_ms_ = 0;
++  guint bar_tick_id_ = 0;
 +  std::string bar_current_;
-+  sigc::connection bar_anim_conn_;
 +
 +  const std::string name_;
 +  const std::string output_name_;
@@ -351,10 +359,10 @@ index 86abb43d..82306b4f 100644
      }
 diff --git a/src/modules/ring.cpp b/src/modules/ring.cpp
 new file mode 100644
-index 00000000..40cca2b3
+index 00000000..1385a8bd
 --- /dev/null
 +++ b/src/modules/ring.cpp
-@@ -0,0 +1,571 @@
+@@ -0,0 +1,589 @@
 +#include "modules/ring.hpp"
 +
 +#include <gtk/gtk.h>
@@ -629,29 +637,52 @@ index 00000000..40cca2b3
 +
 +Ring::~Ring() {
 +  restart_connection_.disconnect();
-+  bar_anim_conn_.disconnect();
++  if (bar_tick_id_ != 0) {
++    bar_box_.remove_tick_callback(bar_tick_id_);
++    bar_tick_id_ = 0;
++  }
 +  if (continuous_stream_) {
 +    continuous_stream_->stop();
 +  }
 +}
 +
 +// ── Parchment reveal ───────────────────────────────────────────────
-+// One exponential tick (16 ms, factor 0.14) drives the clip box
-+// width toward its target: ~0.35-0.4 s of visible unroll/roll —
-+// neither abrupt nor slow (user's words). Same house pattern as
-+// the wave module's fluid width; keep the two in step if tuned.
++// A duration tween on the widget's frame clock: easeInOutCubic
++// over 420 ms to open and 360 ms to close. Zero velocity at both
++// ends (no opening lurch, no dragging exponential tail) and one
++// step per rendered frame (no judder). Re-aiming mid-flight
++// starts the new tween from the CURRENT width, so reversals are
++// soft. (This supersedes the first exponential-lerp version.)
 +
-+void Ring::startBarAnim() {
-+  if (!bar_anim_conn_.connected()) {
-+    bar_anim_conn_ = Glib::signal_timeout().connect(sigc::mem_fun(*this, &Ring::barAnimTick), 16);
++namespace {
++double easeInOutCubic(double t) {
++  return t < 0.5 ? 4.0 * t * t * t : 1.0 - std::pow(-2.0 * t + 2.0, 3) / 2.0;
++}
++}  // namespace
++
++void Ring::startBarReveal(double target, int dur_ms) {
++  bar_from_w_ = bar_shown_w_;
++  bar_target_w_ = target;
++  bar_dur_ms_ = dur_ms;
++  bar_t0_us_ = g_get_monotonic_time();
++  if (bar_tick_id_ == 0) {
++    bar_tick_id_ = bar_box_.add_tick_callback(sigc::mem_fun(*this, &Ring::barTick));
 +  }
 +}
 +
-+bool Ring::barAnimTick() {
-+  const double diff = bar_target_w_ - bar_shown_w_;
-+  if (std::abs(diff) < 0.75) {
-+    bar_shown_w_ = bar_target_w_;
-+    bar_box_.set_size_request(static_cast<int>(bar_shown_w_ + 0.5), -1);
++bool Ring::barTick(const Glib::RefPtr<Gdk::FrameClock>& clock) {
++  const gint64 now = clock->get_frame_time();
++  double t = bar_dur_ms_ > 0 ? static_cast<double>(now - bar_t0_us_) / 1000.0 / bar_dur_ms_ : 1.0;
++  if (t >= 1.0) {
++    t = 1.0;
++  }
++  if (t < 0.0) {
++    t = 0.0;
++  }
++  bar_shown_w_ = bar_from_w_ + (bar_target_w_ - bar_from_w_) * easeInOutCubic(t);
++  bar_box_.set_size_request(static_cast<int>(bar_shown_w_ + 0.5), -1);
++  if (t >= 1.0) {
++    bar_tick_id_ = 0;
 +    if (bar_state_ == BarState::Opening) {
 +      bar_state_ = BarState::Open;
 +    } else if (bar_state_ == BarState::Closing) {
@@ -661,8 +692,6 @@ index 00000000..40cca2b3
 +    }
 +    return false;
 +  }
-+  bar_shown_w_ += diff * 0.14;
-+  bar_box_.set_size_request(static_cast<int>(bar_shown_w_ + 0.5), -1);
 +  return true;
 +}
 +
@@ -850,9 +879,8 @@ index 00000000..40cca2b3
 +        bar_box_.show();
 +        int min_w = 0, nat_w = 0;
 +        bar_label_.get_preferred_width(min_w, nat_w);
-+        bar_target_w_ = static_cast<double>(nat_w) + 6.0;
 +        bar_state_ = BarState::Opening;
-+        startBarAnim();
++        startBarReveal(static_cast<double>(nat_w) + 6.0, 420);
 +      } else if (bar_ != bar_current_) {
 +        // Open (or opening) and the content changed (the level
 +        // moved): swap the markup in place and re-aim the width.
@@ -862,15 +890,13 @@ index 00000000..40cca2b3
 +        bar_label_.get_preferred_width(min_w, nat_w);
 +        const double want = static_cast<double>(nat_w) + 6.0;
 +        if (std::abs(want - bar_target_w_) > 2.0) {
-+          bar_target_w_ = want;
-+          startBarAnim();
++          startBarReveal(want, 420);
 +        }
 +      }
 +    } else if (bar_state_ == BarState::Open || bar_state_ == BarState::Opening) {
 +      // Roll back up; the label hides only when fully closed.
 +      bar_state_ = BarState::Closing;
-+      bar_target_w_ = 0.0;
-+      startBarAnim();
++      startBarReveal(0.0, 360);
 +    }
 +    if (tooltipEnabled()) {
 +      event_box_.set_tooltip_markup(tooltip_);
