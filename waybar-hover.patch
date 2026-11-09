@@ -140,10 +140,10 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..54707861
+index 00000000..5caaf079
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,107 @@
 +#pragma once
 +
 +#include <chrono>
@@ -187,10 +187,12 @@ index 00000000..54707861
 +  bool on_draw(const Cairo::RefPtr<Cairo::Context>& cr) override;
 +
 + private:
++  void drawOnda(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  bool resolveColor(const std::string& name, double& r, double& g, double& b);
 +  bool gradientColor(double t, double& r, double& g, double& b);
 +
 +  std::vector<double> values_;
++  std::vector<std::vector<double>> hist_;
 +  bool onda_ = false;
 +  bool inner_right_ = false;
 +  std::string color_{"waybar-accent"};
@@ -1002,10 +1004,10 @@ index 00000000..8383b52e
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..0bb4cc0c
+index 00000000..4c36b915
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,521 @@
+@@ -0,0 +1,572 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1103,6 +1105,10 @@ index 00000000..0bb4cc0c
 +    }
 +  }
 +  values_ = values;
++  hist_.push_back(values);
++  if (hist_.size() > 12) {
++    hist_.erase(hist_.begin());
++  }
 +  queue_draw();
 +}
 +
@@ -1133,6 +1139,10 @@ index 00000000..0bb4cc0c
 +    return false;
 +  }
 +  const double mid = h / 2.0;
++  if (onda_) {
++    drawOnda(cr, w, h);
++    return false;
++  }
 +  const double min_d = 3.2;
 +  const double max_d = std::min(20.0, h - 6.0);
 +  // Inset the columns by the max radius (+1 px of air) so the
@@ -1153,32 +1163,75 @@ index 00000000..0bb4cc0c
 +      r = g = b = 1.0;
 +    }
 +    cr->set_source_rgba(r, g, b, 0.92);
-+    if (onda_) {
-+      // Dictation (user's pick, 2026-11-08): "onda que termina en
-+      // puntos". The columns nearest the INNER edge (toward the
-+      // pills at the center) draw as vertical bars — the wave —
-+      // and from the fifth column outward they end as round dots
-+      // like the music ones. Bar height follows the band level;
-+      // at rest the bars are short stubs and the dots minimal.
-+      const double dist_inner = inner_right_ ? static_cast<double>(n - 1 - i)
-+                                             : static_cast<double>(i);
-+      if (dist_inner < 4.0) {
-+        const double bh = 3.0 + std::pow(v, 1.2) * (h - 9.0);
-+        const double bw = 3.4;
-+        const double half = std::max(0.0, (bh - bw) / 2.0);
-+        cr->set_line_width(bw);
-+        cr->set_line_cap(Cairo::LINE_CAP_ROUND);
-+        cr->move_to(cx, mid - half);
-+        cr->line_to(cx, mid + half);
-+        cr->stroke();
-+        continue;
-+      }
-+    }
 +    const double d = min_d + std::pow(v, 1.35) * (max_d - min_d);
 +    cr->arc(cx, mid, d / 2.0, 0, 2 * M_PI);
 +    cr->fill();
 +  }
 +  return false;
++}
++
++
++// ── Onda con estela (dictado; eleccion del usuario, 2026-11-08) ──
++// Silueta LLENA en tres capas: la onda actual delante y dos
++// fotogramas anteriores detras, mas gruesos y mas transparentes
++// (la estela). El grosor sigue al nivel interpolado suave entre
++// las 8 bandas. BORDES: el grosor y el alfa se desvanecen con un
++// smoothstep en el 16 % externo de cada lado — la onda nunca se
++// corta feo contra el borde del lienzo, se apaga antes de llegar.
++// El color es el degradado dinamico de siempre (fase rodante),
++// fijo en todos los disenos, como pidio el usuario.
++void WaveCanvas::drawOnda(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h) {
++  const double mid = h / 2.0;
++  const int M = 72;
++  auto muestras = [M](const std::vector<double>& src) {
++    std::vector<double> out(M, 0.0);
++    const size_t n = src.size();
++    if (n == 0) {
++      return out;
++    }
++    for (int i = 0; i < M; ++i) {
++      const double x = static_cast<double>(i) / (M - 1) * static_cast<double>(n - 1);
++      const size_t j = static_cast<size_t>(x);
++      double f = x - static_cast<double>(j);
++      f = (1.0 - std::cos(f * M_PI)) / 2.0;
++      const double a = src[j];
++      const double b = src[std::min(n - 1, j + 1)];
++      out[i] = a * (1.0 - f) + b * f;
++    }
++    return out;
++  };
++  struct Capa {
++    size_t ago;
++    double factor;
++    double alfa;
++  };
++  const Capa capas[3] = {{6, 1.55, 0.15}, {3, 1.25, 0.30}, {0, 0.90, 0.95}};
++  const double margen = 4.0;
++  const double util = w - 2 * margen;
++  const double paso = util / (M - 1);
++  for (const auto& capa : capas) {
++    const std::vector<double>* src = &values_;
++    if (capa.ago > 0 && hist_.size() > capa.ago) {
++      src = &hist_[hist_.size() - 1 - capa.ago];
++    }
++    const auto sm = muestras(*src);
++    for (int i = 0; i < M; ++i) {
++      const double t = static_cast<double>(i) / (M - 1);
++      const double x = margen + t * util;
++      const double borde = std::min(t, 1.0 - t) / 0.16;
++      const double ec = std::clamp(borde, 0.0, 1.0);
++      const double taper = ec * ec * (3.0 - 2.0 * ec);
++      const double v = std::clamp(sm[i], 0.0, 1.0);
++      const double th = (1.2 + v * (h - 9.0)) * capa.factor * (0.10 + 0.90 * taper);
++      double r, g, b;
++      if (!gradientColor(t, r, g, b)) {
++        r = g = b = 1.0;
++      }
++      cr->set_source_rgba(r, g, b, capa.alfa * (0.20 + 0.80 * taper));
++      cr->rectangle(x - paso / 2 - 0.4, mid - th / 2, paso + 0.8, th);
++      cr->fill();
++    }
++  }
 +}
 +
 +// ── Wave ───────────────────────────────────────────────────────────
