@@ -12,7 +12,7 @@ index 3fea52f6..379b8722 100644
        {std::make_pair(1, GdkEventType::GDK_BUTTON_RELEASE), "on-click-release"},
 diff --git a/include/modules/ring.hpp b/include/modules/ring.hpp
 new file mode 100644
-index 00000000..811e12da
+index 00000000..0acfcd15
 --- /dev/null
 +++ b/include/modules/ring.hpp
 @@ -0,0 +1,122 @@
@@ -98,11 +98,11 @@ index 00000000..811e12da
 +  // ends the clipped last dot: with the label as a merely packed
 +  // child, a full bar (two/three bars open at once) squeezed its
 +  // allocation and the final dot was cut mid-glyph.
-+  // The tween runs on the FRAME CLOCK with an easeInOutCubic
-+  // curve over a fixed duration: the first exponential-lerp
-+  // version lurched at the start, stepped unevenly against the
-+  // render frames and dragged its tail — "brusco, como si se
-+  // pegara". Frame-synced eased steps are what make it fluid.
++  // The tween runs on the FRAME CLOCK with an easeInOutSine
++  // curve (750 ms open / 650 ms close): the first exponential
++  // lerp lurched and dragged, and a 420 ms cubic still read as
++  // brusque to the user's eye — slow and gentle wins here.
++  // Frame-synced eased steps are what make it fluid.
 +  void startBarReveal(double target, int dur_ms);
 +  bool barTick(const Glib::RefPtr<Gdk::FrameClock>& clock);
 +  enum class BarState { Closed, Opening, Open, Closing };
@@ -359,10 +359,10 @@ index 86abb43d..82306b4f 100644
      }
 diff --git a/src/modules/ring.cpp b/src/modules/ring.cpp
 new file mode 100644
-index 00000000..1385a8bd
+index 00000000..8383b52e
 --- /dev/null
 +++ b/src/modules/ring.cpp
-@@ -0,0 +1,589 @@
+@@ -0,0 +1,592 @@
 +#include "modules/ring.hpp"
 +
 +#include <gtk/gtk.h>
@@ -647,16 +647,19 @@ index 00000000..1385a8bd
 +}
 +
 +// ── Parchment reveal ───────────────────────────────────────────────
-+// A duration tween on the widget's frame clock: easeInOutCubic
-+// over 420 ms to open and 360 ms to close. Zero velocity at both
-+// ends (no opening lurch, no dragging exponential tail) and one
-+// step per rendered frame (no judder). Re-aiming mid-flight
-+// starts the new tween from the CURRENT width, so reversals are
-+// soft. (This supersedes the first exponential-lerp version.)
++// A duration tween on the widget's frame clock: easeInOutSine
++// over 750 ms to open and 650 ms to close. Tuning history (the
++// user judges this by eye): the exponential lerp lurched and
++// dragged; cubic at 420/360 was still "muy brusco" — too fast
++// and its mid-sweep too eager. Sine has the gentlest peak
++// velocity of the easeInOut family and, at these durations, the
++// unroll finally reads as a parchment, not a pop. One step per
++// rendered frame (no judder); re-aiming mid-flight starts the
++// new tween from the CURRENT width, so reversals are soft.
 +
 +namespace {
-+double easeInOutCubic(double t) {
-+  return t < 0.5 ? 4.0 * t * t * t : 1.0 - std::pow(-2.0 * t + 2.0, 3) / 2.0;
++double easeInOutSine(double t) {
++  return 0.5 - 0.5 * std::cos(M_PI * t);
 +}
 +}  // namespace
 +
@@ -679,7 +682,7 @@ index 00000000..1385a8bd
 +  if (t < 0.0) {
 +    t = 0.0;
 +  }
-+  bar_shown_w_ = bar_from_w_ + (bar_target_w_ - bar_from_w_) * easeInOutCubic(t);
++  bar_shown_w_ = bar_from_w_ + (bar_target_w_ - bar_from_w_) * easeInOutSine(t);
 +  bar_box_.set_size_request(static_cast<int>(bar_shown_w_ + 0.5), -1);
 +  if (t >= 1.0) {
 +    bar_tick_id_ = 0;
@@ -880,7 +883,7 @@ index 00000000..1385a8bd
 +        int min_w = 0, nat_w = 0;
 +        bar_label_.get_preferred_width(min_w, nat_w);
 +        bar_state_ = BarState::Opening;
-+        startBarReveal(static_cast<double>(nat_w) + 6.0, 420);
++        startBarReveal(static_cast<double>(nat_w) + 6.0, 750);
 +      } else if (bar_ != bar_current_) {
 +        // Open (or opening) and the content changed (the level
 +        // moved): swap the markup in place and re-aim the width.
@@ -890,13 +893,13 @@ index 00000000..1385a8bd
 +        bar_label_.get_preferred_width(min_w, nat_w);
 +        const double want = static_cast<double>(nat_w) + 6.0;
 +        if (std::abs(want - bar_target_w_) > 2.0) {
-+          startBarReveal(want, 420);
++          startBarReveal(want, 750);
 +        }
 +      }
 +    } else if (bar_state_ == BarState::Open || bar_state_ == BarState::Opening) {
 +      // Roll back up; the label hides only when fully closed.
 +      bar_state_ = BarState::Closing;
-+      startBarReveal(0.0, 360);
++      startBarReveal(0.0, 650);
 +    }
 +    if (tooltipEnabled()) {
 +      event_box_.set_tooltip_markup(tooltip_);
