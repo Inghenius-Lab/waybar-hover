@@ -140,10 +140,10 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..38610388
+index 00000000..54707861
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,105 @@
 +#pragma once
 +
 +#include <chrono>
@@ -178,6 +178,10 @@ index 00000000..38610388
 +  void setValues(const std::vector<double>& values);
 +  void setColor(const std::string& spec);
 +  void setGradient(const std::vector<std::string>& stops);
++  // Dictation look (2026-11-08): "onda que termina en puntos" —
++  // bars near the inner edge, dots toward the outer edge.
++  void setOnda(bool onda);
++  void setInnerRight(bool inner_right);
 +
 + protected:
 +  bool on_draw(const Cairo::RefPtr<Cairo::Context>& cr) override;
@@ -187,6 +191,8 @@ index 00000000..38610388
 +  bool gradientColor(double t, double& r, double& g, double& b);
 +
 +  std::vector<double> values_;
++  bool onda_ = false;
++  bool inner_right_ = false;
 +  std::string color_{"waybar-accent"};
 +  std::vector<std::string> gradient_;
 +  double phase_ = 0.0;
@@ -996,10 +1002,10 @@ index 00000000..8383b52e
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..132fec85
+index 00000000..0bb4cc0c
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,483 @@
+@@ -0,0 +1,521 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1037,6 +1043,15 @@ index 00000000..132fec85
 +}
 +
 +void WaveCanvas::setColor(const std::string& spec) { color_ = spec; }
++
++void WaveCanvas::setOnda(bool onda) {
++  if (onda != onda_) {
++    onda_ = onda;
++    queue_draw();
++  }
++}
++
++void WaveCanvas::setInnerRight(bool inner_right) { inner_right_ = inner_right; }
 +
 +void WaveCanvas::setGradient(const std::vector<std::string>& stops) { gradient_ = stops; }
 +
@@ -1131,7 +1146,6 @@ index 00000000..132fec85
 +
 +  for (size_t i = 0; i < n; ++i) {
 +    const double v = std::clamp(values_[i], 0.0, 1.0);
-+    const double d = min_d + std::pow(v, 1.35) * (max_d - min_d);
 +    const double t = n > 1 ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.5;
 +    const double cx = inset + span * t;
 +    double r, g, b;
@@ -1139,6 +1153,28 @@ index 00000000..132fec85
 +      r = g = b = 1.0;
 +    }
 +    cr->set_source_rgba(r, g, b, 0.92);
++    if (onda_) {
++      // Dictation (user's pick, 2026-11-08): "onda que termina en
++      // puntos". The columns nearest the INNER edge (toward the
++      // pills at the center) draw as vertical bars — the wave —
++      // and from the fifth column outward they end as round dots
++      // like the music ones. Bar height follows the band level;
++      // at rest the bars are short stubs and the dots minimal.
++      const double dist_inner = inner_right_ ? static_cast<double>(n - 1 - i)
++                                             : static_cast<double>(i);
++      if (dist_inner < 4.0) {
++        const double bh = 3.0 + std::pow(v, 1.2) * (h - 9.0);
++        const double bw = 3.4;
++        const double half = std::max(0.0, (bh - bw) / 2.0);
++        cr->set_line_width(bw);
++        cr->set_line_cap(Cairo::LINE_CAP_ROUND);
++        cr->move_to(cx, mid - half);
++        cr->line_to(cx, mid + half);
++        cr->stroke();
++        continue;
++      }
++    }
++    const double d = min_d + std::pow(v, 1.35) * (max_d - min_d);
 +    cr->arc(cx, mid, d / 2.0, 0, 2 * M_PI);
 +    cr->fill();
 +  }
@@ -1173,6 +1209,7 @@ index 00000000..132fec85
 +    }
 +  }
 +
++  canvas_.setInnerRight(name_.find("left") != std::string::npos);
 +  wrap_.set_name("wave-" + name);
 +  wrap_.get_style_context()->add_class(MODULE_CLASS);
 +  wrap_.set_halign(Gtk::ALIGN_CENTER);
@@ -1426,6 +1463,13 @@ index 00000000..132fec85
 +      onSoundFrame();
 +    }
 +
++    bool mic = false;
++    for (auto const& c : class_) {
++      if (c == "mic") {
++        mic = true;
++      }
++    }
++    canvas_.setOnda(mic);
 +    canvas_.setValues(values_);
 +    if (tooltipEnabled()) {
 +      event_box_.set_tooltip_markup(tooltip_);
