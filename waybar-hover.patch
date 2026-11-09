@@ -1056,10 +1056,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..2e9e326c
+index 00000000..cca62749
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,1361 @@
+@@ -0,0 +1,1345 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1334,12 +1334,16 @@ index 00000000..2e9e326c
 +  if (gradient_.size() < 2) {
 +    return resolveColor(gradient_.empty() ? color_ : gradient_.front(), r, g, b);
 +  }
-+  // La coordenada que manda es la distancia al centro: el
-+  // lienzo izquierdo la mide al reves, y asi a igual distancia
-+  // cae el mismo color del campo compartido en los dos lados.
-+  return campoColor(inner_right_ ? 1.0 - std::clamp(t, 0.0, 1.0)
-+                                 : std::clamp(t, 0.0, 1.0),
-+                    r, g, b);
++  // La orientacion de siempre (aclaracion suya, 2026-11-09):
++  // el color corre A LO LARGO de la onda, medido como distancia
++  // al centro (el lienzo izquierdo la mide al reves: a igual
++  // distancia, el mismo color). La muestra va escalada por la
++  // respiracion: el patron de color se expande y se contrae
++  // desde el centro, continuo y sin saltos.
++  campo_degradado.avanzar();
++  const double s = inner_right_ ? 1.0 - std::clamp(t, 0.0, 1.0)
++                                : std::clamp(t, 0.0, 1.0);
++  return campoColor(s * campo_degradado.escala_, r, g, b);
 +}
 +
 +// Paradas del tema en orden canonico fijo (acento, contenedor,
@@ -1572,23 +1576,13 @@ index 00000000..2e9e326c
 +      const double taper = ec * ec * (3.0 - 2.0 * ec);
 +      const double v = std::clamp(sm[i], 0.0, 1.0);
 +      const double th = (1.2 + v * (h - 9.0)) * capa.factor * (0.10 + 0.90 * taper);
-+        // Degradado VERTICAL que respira (2026-11-09, a su
-+        // pedido: solo vertical, nada de horizontales): la
-+        // franja se pinta en 6 pisos y cada piso toma el color
-+        // del campo a su ALTURA ABSOLUTA en el lienzo, con la
-+        // respiracion expandiendo y contrayendo la muestra —
-+        // tonos que se abren y se cierran suaves, sin estados
-+        // ni saltos.
-+        for (int piso = 0; piso < 6; ++piso) {
-+          const double y0 = mid - th / 2 + th * piso / 6.0;
-+          double r, g, b;
-+          if (!campoColorVertical(y0 + th / 12.0, h, r, g, b)) {
-+            r = g = b = 1.0;
-+          }
-+          cr->set_source_rgba(r, g, b, capa.alfa * (0.20 + 0.80 * taper));
-+          cr->rectangle(x - paso / 2 - 0.4, y0, paso + 0.8, th / 6 + 0.8);
-+          cr->fill();
-+        }
++      double r, g, b;
++      if (!gradientColor(t, r, g, b)) {
++        r = g = b = 1.0;
++      }
++      cr->set_source_rgba(r, g, b, capa.alfa * (0.20 + 0.80 * taper));
++      cr->rectangle(x - paso / 2 - 0.4, mid - th / 2, paso + 0.8, th);
++      cr->fill();
 +    }
 +  }
 +}
@@ -1643,23 +1637,13 @@ index 00000000..2e9e326c
 +      const double taper = ec * ec * (3.0 - 2.0 * ec);
 +      const double v = std::clamp(sm[i], 0.0, 1.0);
 +      const double th = (1.2 + v * (h - 9.0)) * capa.factor * (0.10 + 0.90 * taper);
-+        // Degradado VERTICAL que respira (2026-11-09, a su
-+        // pedido: solo vertical, nada de horizontales): la
-+        // franja se pinta en 6 pisos y cada piso toma el color
-+        // del campo a su ALTURA ABSOLUTA en el lienzo, con la
-+        // respiracion expandiendo y contrayendo la muestra —
-+        // tonos que se abren y se cierran suaves, sin estados
-+        // ni saltos.
-+        for (int piso = 0; piso < 6; ++piso) {
-+          const double y0 = mid - th / 2 + th * piso / 6.0;
-+          double r, g, b;
-+          if (!campoColorVertical(y0 + th / 12.0, h, r, g, b)) {
-+            r = g = b = 1.0;
-+          }
-+          cr->set_source_rgba(r, g, b, capa.alfa * (0.20 + 0.80 * taper));
-+          cr->rectangle(x - paso / 2 - 0.4, y0, paso + 0.8, th / 6 + 0.8);
-+          cr->fill();
-+        }
++      double r, g, b;
++      if (!gradientColor(t, r, g, b)) {
++        r = g = b = 1.0;
++      }
++      cr->set_source_rgba(r, g, b, capa.alfa * (0.20 + 0.80 * taper));
++      cr->rectangle(x - paso / 2 - 0.4, mid - th / 2, paso + 0.8, th);
++      cr->fill();
 +    }
 +  }
 +}
