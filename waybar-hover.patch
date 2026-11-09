@@ -140,10 +140,10 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..afcae3f9
+index 00000000..ac986b39
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,144 @@
 +#pragma once
 +
 +#include <array>
@@ -234,6 +234,7 @@ index 00000000..afcae3f9
 +  std::vector<std::string> gradient_;
 +  double phase_ = 0.0;
 +  double fase_pulso_ = 0.0;
++  double ciclos_ = 2.0;
 +};
 +
 +class Wave : public AModule {
@@ -1054,10 +1055,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..4e3d7aa8
+index 00000000..4450b161
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,1189 @@
+@@ -0,0 +1,1200 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1108,6 +1109,18 @@ index 00000000..4e3d7aa8
 +            medio /= static_cast<double>(values_.size());
 +          }
 +          fase_pulso_ = std::fmod(fase_pulso_ + 0.0022 + medio * 0.030, 1.0);
++          // Ancho variable del degradado (2026-11-09, a su
++          // pedido): el numero de ciclos a lo ancho RESPIRA con
++          // la musica — objetivo segun el nivel medio (de ~0,35
++          // ciclos, un solo tono que lo abarca todo, hasta ~5,
++          // muchas lineas finas seguidas) mas un vaiven lento
++          // propio que lo hace impredecible; el valor mostrado
++          // se acerca al objetivo poco a poco (factor 0,03) para
++          // que el ensanche y el encogido sean suaves, nunca un
++          // salto.
++          double objetivo = 0.35 + medio * 4.6 + 0.55 * std::sin(tick_ * 0.0016);
++          objetivo = std::clamp(objetivo, 0.3, 6.0);
++          ciclos_ += (objetivo - ciclos_) * 0.03;
 +        }
 +        if (!values_.empty()) {
 +          if (disp_.size() != values_.size() || onda_ || chispas_ || simbolos_ || estela_) {
@@ -1225,18 +1238,17 @@ index 00000000..4e3d7aa8
 +    return true;
 +  }
 +  // Onda expansiva (2026-11-09, a su pedido): el ciclo de color
-+  // se repite CICLOS veces a lo ancho del lienzo (varios
-+  // degradados consecutivos, como anillos en el agua) y la fase
-+  // entra con signo contrario en cada lienzo — en el de la
-+  // izquierda (inner_right_) suma y en el de la derecha resta —
-+  // de modo que los rasgos del patron SE ALEJAN del centro en
-+  // los dos lados a la vez: una expansion desde las letras
-+  // hacia afuera, simetrica, en vez de un barrido que cruza la
-+  // barra de lado a lado. CICLOS entero conserva la simetria
-+  // exacta con las listas de paradas espejadas de la config.
-+  const double CICLOS = 2.0;
++  // se repite ciclos_ veces a lo ancho del lienzo (varios
++  // degradados consecutivos, como anillos en el agua; ciclos_
++  // respira con la musica, del tono unico a las lineas finas)
++  // y la fase entra con signo contrario en cada lienzo — en el
++  // de la izquierda (inner_right_) suma y en el de la derecha
++  // resta — de modo que los rasgos del patron SE ALEJAN del
++  // centro en los dos lados a la vez: una expansion desde las
++  // letras hacia afuera, en vez de un barrido que cruza la
++  // barra de lado a lado.
 +  const double fase_dir = inner_right_ ? fase_pulso_ : -fase_pulso_;
-+  double crudo = std::fmod(std::clamp(t, 0.0, 1.0) * CICLOS + fase_dir, 1.0);
++  double crudo = std::fmod(std::clamp(t, 0.0, 1.0) * ciclos_ + fase_dir, 1.0);
 +  if (crudo < 0) {
 +    crudo += 1.0;
 +  }
