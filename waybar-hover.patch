@@ -140,12 +140,13 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..0a20b583
+index 00000000..cd943e7f
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,124 @@
 +#pragma once
 +
++#include <array>
 +#include <chrono>
 +#include <string>
 +#include <vector>
@@ -196,7 +197,16 @@ index 00000000..0a20b583
 +  bool gradientColor(double t, double& r, double& g, double& b);
 +
 +  std::vector<double> values_;
++  // Interpolated display values (2026-11-09): the dots draw these,
++  // eased toward values_ on the 25 ms canvas tick, so the motion is
++  // evenly paced at 40 fps instead of jumping at the data rate.
++  std::vector<double> disp_;
 +  std::vector<std::vector<double>> hist_;
++  // Resolved gradient stops, cached ~0.5 s: resolving theme colors
++  // walks the CSS cascade, far too costly to redo per dot per frame.
++  std::vector<std::array<double, 3>> stops_cache_;
++  int stops_tick_ = -100000;
++  bool stops_ok_ = false;
 +  bool onda_ = false;
 +  bool chispas_ = false;
 +  bool simbolos_ = false;
@@ -1025,10 +1035,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..fe8ddba6
+index 00000000..80e79317
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,714 @@
+@@ -0,0 +1,743 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1054,16 +1064,30 @@ index 00000000..fe8ddba6
 +// so no dot keeps one color — the tonalities travel the row.
 +
 +WaveCanvas::WaveCanvas() {
++  // 25 ms tick (2026-11-09): the ONLY draw pacer, so frames land
++  // evenly at 40 fps. Per tick it advances the rolling phase by
++  // half the old step (same ~10 s turn) and eases the displayed
++  // dot values halfway toward the latest data frame — the
++  // interpolation the user asked for: data arrives at ~30 fps in
++  // bursts, the dots glide instead of jumping. Mic modes snap
++  // (their own designs carry their own motion).
 +  Glib::signal_timeout().connect(
 +      [this]() {
 +        ++tick_;
-+        phase_ = std::fmod(phase_ + 0.005, 1.0);
++        phase_ = std::fmod(phase_ + 0.0025, 1.0);
 +        if (!values_.empty()) {
++          if (disp_.size() != values_.size() || onda_ || chispas_ || simbolos_) {
++            disp_ = values_;
++          } else {
++            for (size_t i = 0; i < disp_.size(); ++i) {
++              disp_[i] += (values_[i] - disp_[i]) * 0.5;
++            }
++          }
 +          queue_draw();
 +        }
 +        return true;
 +      },
-+      50);
++      25);
 +}
 +
 +void WaveCanvas::setColor(const std::string& spec) { color_ = spec; }
@@ -1091,19 +1115,30 @@ index 00000000..fe8ddba6
 +  }
 +}
 +
-+void WaveCanvas::setGradient(const std::vector<std::string>& stops) { gradient_ = stops; }
++void WaveCanvas::setGradient(const std::vector<std::string>& stops) {
++  gradient_ = stops;
++  stops_ok_ = false;
++}
 +
 +bool WaveCanvas::gradientColor(double t, double& r, double& g, double& b) {
 +  if (gradient_.size() < 2) {
 +    return resolveColor(gradient_.empty() ? color_ : gradient_.front(), r, g, b);
 +  }
-+  std::vector<std::array<double, 3>> stops;
-+  for (auto const& name : gradient_) {
-+    double sr, sg, sb;
-+    if (resolveColor(name, sr, sg, sb)) {
-+      stops.push_back({sr, sg, sb});
++  // Cached stops (2026-11-09): resolve at most twice a second;
++  // a matugen theme swap reloads the bar anyway, so staleness is
++  // bounded and invisible.
++  if (!stops_ok_ || tick_ - stops_tick_ >= 20) {
++    stops_cache_.clear();
++    for (auto const& name : gradient_) {
++      double sr, sg, sb;
++      if (resolveColor(name, sr, sg, sb)) {
++        stops_cache_.push_back({sr, sg, sb});
++      }
 +    }
++    stops_tick_ = tick_;
++    stops_ok_ = true;
 +  }
++  const std::vector<std::array<double, 3>>& stops = stops_cache_;
 +  if (stops.empty()) {
 +    return false;
 +  }
@@ -1145,7 +1180,11 @@ index 00000000..fe8ddba6
 +  if (hist_.size() > 12) {
 +    hist_.erase(hist_.begin());
 +  }
-+  queue_draw();
++  if (disp_.size() != values_.size()) {
++    disp_ = values_;
++  }
++  // No queue_draw here (2026-11-09): the 25 ms canvas tick paces
++  // every frame evenly; drawing on arrival made the pacing bursty.
 +}
 +
 +bool WaveCanvas::resolveColor(const std::string& name, double& r, double& g, double& b) {
@@ -1199,7 +1238,7 @@ index 00000000..fe8ddba6
 +  const double span = w - 2 * inset;
 +
 +  for (size_t i = 0; i < n; ++i) {
-+    const double v = std::clamp(values_[i], 0.0, 1.0);
++    const double v = std::clamp(disp_.size() == n ? disp_[i] : values_[i], 0.0, 1.0);
 +    const double t = n > 1 ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.5;
 +    const double cx = inset + span * t;
 +    double r, g, b;
@@ -1299,7 +1338,7 @@ index 00000000..fe8ddba6
 +    x ^= x >> 13;
 +    return static_cast<double>(x & 0xFFFFFFu) / static_cast<double>(0x1000000u);
 +  };
-+  const int salto = tick_ / 2;
++  const int salto = tick_ / 4;  // tick de 25 ms: mismo ritmo de saltos (~10/s)
 +  for (size_t i = 0; i < n; ++i) {
 +    const double v = std::clamp(values_[i], 0.0, 1.0);
 +    const double t = n > 1 ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.5;
@@ -1354,7 +1393,7 @@ index 00000000..fe8ddba6
 +    x ^= x >> 13;
 +    return static_cast<double>(x & 0xFFFFFFu) / static_cast<double>(0x1000000u);
 +  };
-+  const int paso = tick_ / 10;
++  const int paso = tick_ / 20;  // tick de 25 ms: mismo paso de 0,5 s
 +  for (size_t i = 0; i < n; ++i) {
 +    const double t = n > 1 ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.5;
 +    // Ritmo PROPIO por columna (correccion suya: no todos a la

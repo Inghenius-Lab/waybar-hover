@@ -48,6 +48,8 @@ jobs:
           # arrancaria en la laptop. El resto enlaza contra sonames
           # estables presentes en ambos sistemas.
           meson setup build --buildtype=release \
+            -Doptimization=3 -Db_lto=true \
+            -Dc_args=-march=x86-64-v3 -Dcpp_args=-march=x86-64-v3 \
             --force-fallback-for=fmt,spdlog,jsoncpp \
             -Dfmt:default_library=static \
             -Dspdlog:default_library=static \
