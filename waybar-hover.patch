@@ -12,10 +12,10 @@ index 3fea52f6..379b8722 100644
        {std::make_pair(1, GdkEventType::GDK_BUTTON_RELEASE), "on-click-release"},
 diff --git a/include/modules/ring.hpp b/include/modules/ring.hpp
 new file mode 100644
-index 00000000..b285c7d7
+index 00000000..42045f1f
 --- /dev/null
 +++ b/include/modules/ring.hpp
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,114 @@
 +#pragma once
 +
 +#include <chrono>
@@ -92,12 +92,28 @@ index 00000000..b285c7d7
 +  bool handleToggle(GdkEventButton* const& e) override;
 +  void parseOutputJson();
 +
++  // Parchment reveal for the level bar (user's spec, 2026-11-08):
++  // the bar unrolls/rolls by animating the explicit width of the
++  // clip box that holds the label. The firm requested width also
++  // ends the clipped last dot: with the label as a merely packed
++  // child, a full bar (two/three bars open at once) squeezed its
++  // allocation and the final dot was cut mid-glyph.
++  void startBarAnim();
++  bool barAnimTick();
++  enum class BarState { Closed, Opening, Open, Closing };
++  BarState bar_state_ = BarState::Closed;
++  double bar_shown_w_ = 0.0;
++  double bar_target_w_ = 0.0;
++  std::string bar_current_;
++  sigc::connection bar_anim_conn_;
++
 +  const std::string name_;
 +  const std::string output_name_;
 +  std::chrono::seconds interval_{0};
 +
 +  Gtk::Box wrap_;
 +  RingCanvas canvas_;
++  Gtk::Box bar_box_;
 +  Gtk::Label bar_label_;
 +
 +  std::string text_;
@@ -335,10 +351,10 @@ index 86abb43d..82306b4f 100644
      }
 diff --git a/src/modules/ring.cpp b/src/modules/ring.cpp
 new file mode 100644
-index 00000000..82ced7c1
+index 00000000..5de0e8c0
 --- /dev/null
 +++ b/src/modules/ring.cpp
-@@ -0,0 +1,500 @@
+@@ -0,0 +1,564 @@
 +#include "modules/ring.hpp"
 +
 +#include <gtk/gtk.h>
@@ -570,9 +586,17 @@ index 00000000..82ced7c1
 +  // Optional level bar (JSON "bar"): the level pills show it next
 +  // to the ring while hovering or adjusting, like their text
 +  // widgets did — the ring itself is the at-a-glance indicator.
-+  wrap_.pack_start(bar_label_, false, false, 0);
-+  bar_label_.set_no_show_all(true);
-+  bar_label_.hide();
++  // The label lives in its own clip box whose width the module
++  // animates explicitly (parchment unroll/roll, ~0.4 s): at rest
++  // open the width is the label's natural width + slack, so the
++  // last dot always fits whole.
++  bar_label_.set_halign(Gtk::ALIGN_START);
++  bar_label_.set_ellipsize(Pango::ELLIPSIZE_NONE);
++  bar_box_.add(bar_label_);
++  bar_box_.set_no_show_all(true);
++  bar_box_.set_size_request(0, -1);
++  bar_box_.hide();
++  wrap_.pack_start(bar_box_, false, false, 0);
 +  event_box_.add(wrap_);
 +
 +  // A matugen re-theme swaps the palette under us: redraw with it.
@@ -600,9 +624,41 @@ index 00000000..82ced7c1
 +
 +Ring::~Ring() {
 +  restart_connection_.disconnect();
++  bar_anim_conn_.disconnect();
 +  if (continuous_stream_) {
 +    continuous_stream_->stop();
 +  }
++}
++
++// ── Parchment reveal ───────────────────────────────────────────────
++// One exponential tick (16 ms, factor 0.14) drives the clip box
++// width toward its target: ~0.35-0.4 s of visible unroll/roll —
++// neither abrupt nor slow (user's words). Same house pattern as
++// the wave module's fluid width; keep the two in step if tuned.
++
++void Ring::startBarAnim() {
++  if (!bar_anim_conn_.connected()) {
++    bar_anim_conn_ = Glib::signal_timeout().connect(sigc::mem_fun(*this, &Ring::barAnimTick), 16);
++  }
++}
++
++bool Ring::barAnimTick() {
++  const double diff = bar_target_w_ - bar_shown_w_;
++  if (std::abs(diff) < 0.75) {
++    bar_shown_w_ = bar_target_w_;
++    bar_box_.set_size_request(static_cast<int>(bar_shown_w_ + 0.5), -1);
++    if (bar_state_ == BarState::Opening) {
++      bar_state_ = BarState::Open;
++    } else if (bar_state_ == BarState::Closing) {
++      bar_box_.hide();
++      bar_state_ = BarState::Closed;
++      bar_current_.clear();
++    }
++    return false;
++  }
++  bar_shown_w_ += diff * 0.14;
++  bar_box_.set_size_request(static_cast<int>(bar_shown_w_ + 0.5), -1);
++  return true;
 +}
 +
 +void Ring::delayWorker() {
@@ -779,11 +835,35 @@ index 00000000..82ced7c1
 +    }
 +    canvas_.setIcon(text_, icon_color);
 +    canvas_.setPercentage(percentage_);
-+    if (bar_.empty()) {
-+      bar_label_.hide();
-+    } else {
-+      bar_label_.set_markup(bar_);
-+      bar_label_.show();
++    if (!bar_.empty()) {
++      if (bar_state_ == BarState::Closed || bar_state_ == BarState::Closing) {
++        // (Re)open: measure the fresh markup and unroll to it.
++        bar_label_.set_markup(bar_);
++        bar_current_ = bar_;
++        int min_w = 0, nat_w = 0;
++        bar_label_.get_preferred_width(min_w, nat_w);
++        bar_target_w_ = static_cast<double>(nat_w) + 6.0;
++        bar_box_.show();
++        bar_state_ = BarState::Opening;
++        startBarAnim();
++      } else if (bar_ != bar_current_) {
++        // Open (or opening) and the content changed (the level
++        // moved): swap the markup in place and re-aim the width.
++        bar_label_.set_markup(bar_);
++        bar_current_ = bar_;
++        int min_w = 0, nat_w = 0;
++        bar_label_.get_preferred_width(min_w, nat_w);
++        const double want = static_cast<double>(nat_w) + 6.0;
++        if (std::abs(want - bar_target_w_) > 2.0) {
++          bar_target_w_ = want;
++          startBarAnim();
++        }
++      }
++    } else if (bar_state_ == BarState::Open || bar_state_ == BarState::Opening) {
++      // Roll back up; the label hides only when fully closed.
++      bar_state_ = BarState::Closing;
++      bar_target_w_ = 0.0;
++      startBarAnim();
 +    }
 +    if (tooltipEnabled()) {
 +      event_box_.set_tooltip_markup(tooltip_);
