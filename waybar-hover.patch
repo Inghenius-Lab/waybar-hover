@@ -413,10 +413,10 @@ index 86abb43d..82306b4f 100644
      }
 diff --git a/src/modules/ring.cpp b/src/modules/ring.cpp
 new file mode 100644
-index 00000000..12116873
+index 00000000..ac01bfc2
 --- /dev/null
 +++ b/src/modules/ring.cpp
-@@ -0,0 +1,603 @@
+@@ -0,0 +1,606 @@
 +#include "modules/ring.hpp"
 +
 +#include <gtk/gtk.h>
@@ -478,7 +478,7 @@ index 00000000..12116873
 +  auto layout = create_pango_layout(icon_glyph_);
 +  Pango::FontDescription font("JetBrainsMono Nerd Font");
 +  font.set_weight(Pango::WEIGHT_BOLD);
-+  font.set_size(static_cast<int>(diameter * 0.46 * Pango::SCALE));
++  font.set_size(static_cast<int>(diameter * 0.43 * Pango::SCALE));
 +  layout->set_font_description(font);
 +
 +  // Center by the glyph's INK box, not its advance box: Nerd Font
@@ -500,7 +500,10 @@ index 00000000..12116873
 +  grad->add_color_stop_rgb(0.52, r, g, b);
 +  grad->add_color_stop_rgb(1.0, r * 0.60, g * 0.60, b * 0.60);
 +  cr->set_source(grad);
-+  cr->move_to(x, y);
++  // Centrado exacto a pixel (pedido suyo): la posicion se
++  // ajusta a la rejilla de pixeles del lienzo para que la
++  // tinta quede simetrica respecto al centro del anillo.
++  cr->move_to(std::round(x), std::round(y));
 +  layout->show_in_cairo_context(cr);
 +}
 +
