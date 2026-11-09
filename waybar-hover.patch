@@ -140,10 +140,10 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..94978606
+index 00000000..afcae3f9
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,143 @@
 +#pragma once
 +
 +#include <array>
@@ -233,6 +233,7 @@ index 00000000..94978606
 +  std::string color_{"waybar-accent"};
 +  std::vector<std::string> gradient_;
 +  double phase_ = 0.0;
++  double fase_pulso_ = 0.0;
 +};
 +
 +class Wave : public AModule {
@@ -1053,10 +1054,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..f0450b34
+index 00000000..4e3d7aa8
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,1162 @@
+@@ -0,0 +1,1189 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1093,6 +1094,21 @@ index 00000000..f0450b34
 +      [this]() {
 +        ++tick_;
 +        phase_ = std::fmod(phase_ + 0.0025, 1.0);
++        // Fase de la onda expansiva (2026-11-09): avanza con una
++        // deriva suave de base mas un empuje proporcional al
++        // nivel medio del lienzo — a mas musica, mas rapido
++        // viajan los pulsos de color desde el centro hacia
++        // afuera, al son de lo que suena.
++        {
++          double medio = 0.0;
++          if (!values_.empty()) {
++            for (double v : values_) {
++              medio += v;
++            }
++            medio /= static_cast<double>(values_.size());
++          }
++          fase_pulso_ = std::fmod(fase_pulso_ + 0.0022 + medio * 0.030, 1.0);
++        }
 +        if (!values_.empty()) {
 +          if (disp_.size() != values_.size() || onda_ || chispas_ || simbolos_ || estela_) {
 +            disp_ = values_;
@@ -1208,11 +1224,23 @@ index 00000000..f0450b34
 +    b = stops[0][2];
 +    return true;
 +  }
-+  // Cyclic: the sweep wraps from the last stop back to the first,
-+  // and the rolling phase_ shifts every column's position in the
-+  // cycle, so the colors travel instead of sitting still.
-+  const double pos = std::fmod(std::clamp(t, 0.0, 1.0) + phase_, 1.0) *
-+                     static_cast<double>(stops.size());
++  // Onda expansiva (2026-11-09, a su pedido): el ciclo de color
++  // se repite CICLOS veces a lo ancho del lienzo (varios
++  // degradados consecutivos, como anillos en el agua) y la fase
++  // entra con signo contrario en cada lienzo — en el de la
++  // izquierda (inner_right_) suma y en el de la derecha resta —
++  // de modo que los rasgos del patron SE ALEJAN del centro en
++  // los dos lados a la vez: una expansion desde las letras
++  // hacia afuera, simetrica, en vez de un barrido que cruza la
++  // barra de lado a lado. CICLOS entero conserva la simetria
++  // exacta con las listas de paradas espejadas de la config.
++  const double CICLOS = 2.0;
++  const double fase_dir = inner_right_ ? fase_pulso_ : -fase_pulso_;
++  double crudo = std::fmod(std::clamp(t, 0.0, 1.0) * CICLOS + fase_dir, 1.0);
++  if (crudo < 0) {
++    crudo += 1.0;
++  }
++  const double pos = crudo * static_cast<double>(stops.size());
 +  const size_t idx = static_cast<size_t>(pos) % stops.size();
 +  const size_t nxt = (idx + 1) % stops.size();
 +  const double f = pos - std::floor(pos);
