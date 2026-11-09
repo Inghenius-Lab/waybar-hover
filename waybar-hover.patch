@@ -413,10 +413,10 @@ index 86abb43d..82306b4f 100644
      }
 diff --git a/src/modules/ring.cpp b/src/modules/ring.cpp
 new file mode 100644
-index 00000000..8383b52e
+index 00000000..12116873
 --- /dev/null
 +++ b/src/modules/ring.cpp
-@@ -0,0 +1,592 @@
+@@ -0,0 +1,603 @@
 +#include "modules/ring.hpp"
 +
 +#include <gtk/gtk.h>
@@ -463,7 +463,6 @@ index 00000000..8383b52e
 +  if (!resolveColor(icon_color_, r, g, b)) {
 +    r = g = b = 1.0;
 +  }
-+  cr->set_source_rgb(r, g, b);
 +
 +  // Precise placement: with font hinting on, Pango snaps the layout
 +  // origin to whole pixels while the extents stay fractional, so
@@ -489,6 +488,18 @@ index 00000000..8383b52e
 +  layout->get_extents(ink, logical);
 +  const double x = cx - (ink.get_x() + ink.get_width() / 2.0) / Pango::SCALE;
 +  const double y = cy - (ink.get_y() + ink.get_height() / 2.0) / Pango::SCALE;
++  // Degradado FIJO del icono (pedido suyo, 2026-11-08): el color
++  // resuelto aclarado arriba, el color en el centro y su
++  // version profunda abajo. Sin animacion. Al derivarse del
++  // color resuelto vale para los siete anillos y para los
++  // colores de estado (aviso, critico, noche, los del script).
++  const double ink_h = ink.get_height() / Pango::SCALE;
++  auto grad = Cairo::LinearGradient::create(0, cy - ink_h / 2.0, 0, cy + ink_h / 2.0);
++  auto claro = [](double c) { return c + (1.0 - c) * 0.38; };
++  grad->add_color_stop_rgb(0.0, claro(r), claro(g), claro(b));
++  grad->add_color_stop_rgb(0.52, r, g, b);
++  grad->add_color_stop_rgb(1.0, r * 0.60, g * 0.60, b * 0.60);
++  cr->set_source(grad);
 +  cr->move_to(x, y);
 +  layout->show_in_cairo_context(cr);
 +}
