@@ -1056,10 +1056,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..cca62749
+index 00000000..66cb4093
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,1345 @@
+@@ -0,0 +1,1324 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1492,34 +1492,13 @@ index 00000000..cca62749
 +    drawOleaje(cr, w, h);
 +    return false;
 +  }
-+  if (estela_) {
-+    drawEstela(cr, w, h);
-+    return false;
-+  }
-+  const double min_d = 3.2;
-+  const double max_d = std::min(20.0, h - 6.0);
-+  // Inset the columns by the max radius (+1 px of air) so the
-+  // first and last dots are always drawn complete, never clipped
-+  // by the canvas edges when they grow.
-+  const double inset = max_d / 2.0 + 1.0;
-+  if (w < 2 * inset + 4) {
-+    return false;
-+  }
-+  const double span = w - 2 * inset;
-+
-+  for (size_t i = 0; i < n; ++i) {
-+    const double v = std::clamp(disp_.size() == n ? disp_[i] : values_[i], 0.0, 1.0);
-+    const double t = n > 1 ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.5;
-+    const double cx = inset + span * t;
-+    double r, g, b;
-+    if (!gradientColor(t, r, g, b)) {
-+      r = g = b = 1.0;
-+    }
-+    cr->set_source_rgba(r, g, b, 0.92);
-+    const double d = min_d + std::pow(v, 1.35) * (max_d - min_d);
-+    cr->arc(cx, mid, d / 2.0, 0, 2 * M_PI);
-+    cr->fill();
-+  }
++  // SIN MODO / MODO BORRADO (2026-11-09, orden suya): el diseno
++  // de PUNTOS que vivia aqui como caida por defecto queda
++  // ELIMINADO del binario — volvio solo cuando un reinicio
++  // borro el fichero de modo de /tmp y no debe reaparecer
++  // jamas. Toda clase de musica sin diseno nombrado dibuja la
++  // ESTELA (T3, su diseno vigente), igual que la clase "estela".
++  drawEstela(cr, w, h);
 +  return false;
 +}
 +
