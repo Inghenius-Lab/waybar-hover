@@ -257,7 +257,7 @@ index a0c5b0d8..e5fe9eb6 100644
      'src/modules/idle_inhibitor.cpp',
      'src/modules/image.cpp',
 diff --git a/src/AModule.cpp b/src/AModule.cpp
-index 65ffb433..24626bbd 100644
+index 65ffb433..b51f4511 100644
 --- a/src/AModule.cpp
 +++ b/src/AModule.cpp
 @@ -102,6 +102,9 @@ AModule::~AModule() {
@@ -270,7 +270,23 @@ index 65ffb433..24626bbd 100644
    for (const auto& pid : pid_children_) {
      if (pid != -1) {
        killpg(pid, SIGTERM);
-@@ -175,6 +178,23 @@ bool AModule::handleMouseEnter(GdkEventCrossing* const& e) {
+@@ -166,6 +169,15 @@ void AModule::setCursor(Gdk::CursorType const& c) {
+ }
+ 
+ bool AModule::handleMouseEnter(GdkEventCrossing* const& e) {
++  // TEMP debug (2026-11-08, brightness hover hunt): log every
++  // crossing with its detail/mode when the env var is set.
++  if (getenv("WAYBAR_HOVER_DEBUG") != nullptr) {
++    if (FILE* f = fopen("/tmp/hover-events.log", "a")) {
++      fprintf(f, "ENTER %s detail=%d mode=%d\n", name_.c_str(),
++              static_cast<int>(e->detail), static_cast<int>(e->mode));
++      fclose(f);
++    }
++  }
+   if (auto* module = event_box_.get_child(); module != nullptr) {
+     module->set_state_flags(Gtk::StateFlags::STATE_FLAG_PRELIGHT);
+   }
+@@ -175,10 +187,34 @@ bool AModule::handleMouseEnter(GdkEventCrossing* const& e) {
      setCursor("pointer");
    }
  
@@ -294,7 +310,18 @@ index 65ffb433..24626bbd 100644
    return false;
  }
  
-@@ -188,6 +208,48 @@ bool AModule::handleMouseLeave(GdkEventCrossing* const& e) {
+ bool AModule::handleMouseLeave(GdkEventCrossing* const& e) {
++  if (getenv("WAYBAR_HOVER_DEBUG") != nullptr) {
++    if (FILE* f = fopen("/tmp/hover-events.log", "a")) {
++      fprintf(f, "LEAVE %s detail=%d mode=%d\n", name_.c_str(),
++              static_cast<int>(e->detail), static_cast<int>(e->mode));
++      fclose(f);
++    }
++  }
+   if (auto* module = event_box_.get_child(); module != nullptr) {
+     module->unset_state_flags(Gtk::StateFlags::STATE_FLAG_PRELIGHT);
+   }
+@@ -188,6 +224,48 @@ bool AModule::handleMouseLeave(GdkEventCrossing* const& e) {
      setCursor("default");
    }
  
