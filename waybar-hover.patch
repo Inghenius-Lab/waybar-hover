@@ -257,7 +257,7 @@ index a0c5b0d8..e5fe9eb6 100644
      'src/modules/idle_inhibitor.cpp',
      'src/modules/image.cpp',
 diff --git a/src/AModule.cpp b/src/AModule.cpp
-index 65ffb433..8033fe37 100644
+index 65ffb433..24626bbd 100644
 --- a/src/AModule.cpp
 +++ b/src/AModule.cpp
 @@ -102,6 +102,9 @@ AModule::~AModule() {
@@ -294,7 +294,7 @@ index 65ffb433..8033fe37 100644
    return false;
  }
  
-@@ -188,6 +208,36 @@ bool AModule::handleMouseLeave(GdkEventCrossing* const& e) {
+@@ -188,6 +208,48 @@ bool AModule::handleMouseLeave(GdkEventCrossing* const& e) {
      setCursor("default");
    }
  
@@ -312,9 +312,21 @@ index 65ffb433..8033fe37 100644
 +  // Gtk::DrawingArea with its OWN GdkWindow inside this event
 +  // box. Moving the pointer onto the icon therefore reads as
 +  // leaving the event box "to an inferior window" — the bar
-+  // hid while the pointer sat on the icon itself. Inferior /
-+  // virtual crossings are internal moves: ignore them.
-+  if (e->detail == GDK_NOTIFY_INFERIOR || e->detail == GDK_NOTIFY_VIRTUAL) {
++  // hid while the pointer sat on the icon itself. Inferior
++  // crossings are internal moves: ignore them.
++  // VIRTUAL crossings are NOT ignored here (correction, same
++  // day, the "rebelde" brightness bar): a virtual leave also
++  // fires when a layout shift slides the module OUT from under
++  // the resting pointer — e.g. the centre pills resize and the
++  // whole right cluster moves while the user hovers the bar.
++  // Ignoring it left the hover marker set forever: the bar
++  // never contracted again until the pointer happened to cross
++  // the module once more. A virtual leave whose widget is
++  // still under the pointer arrives paired with a virtual
++  // enter, and handleMouseEnter cancels this dispatch
++  // unconditionally — so treating virtual leaves like real
++  // ones is safe.
++  if (e->detail == GDK_NOTIFY_INFERIOR) {
 +    return false;
 +  }
 +  if (config_["on-hover-out"].isString()) {
