@@ -1011,10 +1011,10 @@ index 00000000..8383b52e
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..fb8700b9
+index 00000000..fe8ddba6
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,705 @@
+@@ -0,0 +1,714 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1341,27 +1341,36 @@ index 00000000..fb8700b9
 +    return static_cast<double>(x & 0xFFFFFFu) / static_cast<double>(0x1000000u);
 +  };
 +  const int paso = tick_ / 10;
-+  // Tamano ABSOLUTO (13,5 px de tinta aprox.): en puntos, la
-+  // resolucion del contexto lo inflaba al doble y los glifos
-+  // se salian del lienzo (visto en pantalla el 2026-11-08).
-+  Pango::FontDescription fd("Sans Bold");
-+  fd.set_absolute_size(13.5 * 1024);  // 1024 = PANGO_SCALE
 +  for (size_t i = 0; i < n; ++i) {
 +    const double t = n > 1 ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.5;
-+    const double cx = inset + span * t;
-+    const int gi = static_cast<int>(hash01(static_cast<int>(i) * 31 + paso * 17 + static_cast<int>(i) * 7) * total) % total;
++    // Ritmo PROPIO por columna (correccion suya: no todos a la
++    // vez): cada columna cambia cada 1-4 pasos (0,5-2 s) con su
++    // fase, asi los cambios se escalonan y se aprecian.
++    const int periodo = 1 + static_cast<int>(hash01(static_cast<int>(i) * 101) * 4.0);
++    const int fase = static_cast<int>(hash01(static_cast<int>(i) * 202) * 8.0);
++    const int ciclo = (paso + fase) / periodo;
++    const int semilla = static_cast<int>(i) * 31 + ciclo * 17;
++    const int gi = static_cast<int>(hash01(semilla) * total) % total;
++    // Tamano y posicion tambien varian por glifo (11-16,5 px;
++    // jitter de +-2,5 px en x y +-3 px en y), guardando la
++    // distancia minima que dan las columnas fijas.
++    const double tam = 11.0 + hash01(static_cast<int>(i) * 303 + ciclo) * 5.5;
++    const double jx = (hash01(static_cast<int>(i) * 404 + ciclo) - 0.5) * 5.0;
++    const double jy = (hash01(static_cast<int>(i) * 505 + ciclo) - 0.5) * 6.0;
++    Pango::FontDescription fd("Sans Bold");
++    fd.set_absolute_size(tam * 1024);  // 1024 = PANGO_SCALE
 +    double r, g, b;
 +    if (!gradientColor(t, r, g, b)) {
 +      r = g = b = 1.0;
 +    }
-+    const double alfa = 0.55 + 0.45 * hash01(static_cast<int>(i) * 57 + paso * 3);
++    const double alfa = 0.60 + 0.40 * hash01(static_cast<int>(i) * 606 + ciclo);
 +    auto layout = create_pango_layout(GLIFOS[gi]);
 +    layout->set_font_description(fd);
 +    Pango::Rectangle ink, logical;
 +    layout->get_pixel_extents(ink, logical);
 +    cr->set_source_rgba(r, g, b, alfa);
-+    cr->move_to(cx - ink.get_x() - ink.get_width() / 2.0,
-+                mid - ink.get_y() - ink.get_height() / 2.0);
++    cr->move_to(inset + span * t + jx - ink.get_x() - ink.get_width() / 2.0,
++                mid + jy - ink.get_y() - ink.get_height() / 2.0);
 +    layout->show_in_cairo_context(cr);
 +  }
 +}
