@@ -1,0 +1,71 @@
+name: build-waybar-hover
+
+# Compila la Waybar parcheada (parche on-hover) en GitHub Actions.
+# La regla de la casa: nada de compilar en local; el binario se
+# publica como asset del release "build" y la laptop lo descarga.
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar dependencias
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential meson ninja-build pkg-config git \
+            libgtkmm-3.0-dev libgtk-layer-shell-dev libsigc++-2.0-dev \
+            libwayland-dev wayland-protocols libxkbcommon-dev libxkbregistry-dev \
+            libnl-3-dev libnl-genl-3-dev libpulse-dev libmpdclient-dev \
+            libudev-dev libevdev-dev libinput-dev libdbusmenu-gtk3-dev \
+            libplayerctl-dev libpipewire-0.3-dev libupower-glib-dev \
+            libjson-glib-dev liblua5.4-dev libsndfile1-dev libasound2-dev
+
+      - name: Bajar Waybar y aplicar el parche
+        run: |
+          git init src
+          cd src
+          git remote add origin https://github.com/Alexays/Waybar.git
+          git fetch --depth 1 origin 4e207a0cb51a9eb89b4245d90245721f5e39bf06
+          git checkout FETCH_HEAD
+          git apply ../waybar-hover.patch
+          grep -c "on-hover" src/AModule.cpp
+
+      - name: Compilar
+        run: |
+          cd src
+          # fmt/spdlog/jsoncpp van ESTATICOS desde los wraps: sus sonames
+          # de Ubuntu (fmt .so.10, jsoncpp .so.25) no coinciden con los
+          # de Arch (fmt .so.12, jsoncpp .so.27) y el binario no
+          # arrancaria en la laptop. El resto enlaza contra sonames
+          # estables presentes en ambos sistemas.
+          meson setup build --buildtype=release \
+            --force-fallback-for=fmt,spdlog,jsoncpp \
+            -Dfmt:default_library=static \
+            -Dspdlog:default_library=static \
+            -Djsoncpp:default_library=static \
+            -Dcava=disabled -Dwireplumber=disabled \
+            -Dman-pages=disabled -Dtests=disabled
+          ninja -C build waybar
+          ./build/waybar --version || true
+          ldd build/waybar | grep -E "libfmt|libspdlog|libjsoncpp" \
+            && echo "ERROR: quedaron dinamicos" && exit 1 \
+            || echo "fmt/spdlog/jsoncpp estaticos: OK"
+
+      - name: Publicar el binario como release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp src/build/waybar waybar
+          gh release delete build --yes --cleanup-tag || true
+          gh release create build waybar \
+            --title "Waybar con parche hover" \
+            --notes "Compilada en GitHub Actions: Alexays/Waybar@4e207a0c + waybar-hover.patch (claves on-hover/on-hover-out en AModule)."
