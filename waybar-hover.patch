@@ -152,10 +152,10 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..5f763427
+index 00000000..62d47587
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,184 @@
 +#pragma once
 +
 +#include <array>
@@ -271,6 +271,17 @@ index 00000000..5f763427
 +  std::vector<ChispaViva> chispas_ram_;
 +  double spawn_ram_acc_ = 0.0;
 +  double spawn_acc_ = 0.0;
++  // Pixel EN RACIMO (variante 3, eleccion suya 2026-11-11):
++  // tonos discretos que derivan por columna y bloques
++  // gigantes que nacen en grupo sobre los vecinos.
++  struct GigantePix {
++    int col, k, sgn, t0;
++  };
++  std::vector<GigantePix> gigantes_pix_;
++  std::array<int, 21> deriva_pix_{};
++  bool deriva_pix_ok_ = false;
++  std::array<std::array<double, 3>, 5> tonos_pix_{};
++  int tonos_pix_tick_ = -100000;
 +  int tick_ = 0;
 +  bool inner_right_ = false;
 +  std::string color_{"waybar-accent"};
@@ -1128,10 +1139,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..4dba1e7e
+index 00000000..83c30098
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,2007 @@
+@@ -0,0 +1,2093 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -2202,6 +2213,14 @@ index 00000000..4dba1e7e
 +// envolvente de los laterales: en los extremos la pila muere
 +// a ras del centro. Color del degradado, aclarado por altura.
 +void WaveCanvas::drawPixel(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h) {
++  // Pixel EN RACIMO (variante 3, eleccion suya 2026-11-11):
++  // las mismas pilas de bloques, pero el color va por TONOS
++  // DISCRETOS que derivan al azar en cada columna (logica de
++  // pixeles, no el degradado con respiracion, que queda para
++  // los demas disenos) y de vez en cuando un bloque GIGANTE
++  // nace EN GRUPO: arrastra a sus vecinos, crece hasta casi
++  // el doble y se sobrepone a los demas, sin deformar la
++  // barra porque todo pasa dentro del lienzo.
 +  const double mid = h / 2.0;
 +  const int M = 72;
 +  auto muestras = [M](const std::vector<double>& src) {
@@ -2226,6 +2245,56 @@ index 00000000..4dba1e7e
 +  const double paso = w / COLS;
 +  const double bw = paso * 0.78;
 +  const double bh = (h / 2.0) / 5.4;
++  static thread_local std::mt19937 rng_pix{std::random_device{}()};
++  auto azar01 = [&rng_pix]() {
++    return std::uniform_real_distribution<double>(0.0, 1.0)(rng_pix);
++  };
++  // Tonos discretos: 5 muestras fijas de la rampa de matugen,
++  // refrescadas cada ~20 s (sin respiracion encima).
++  if (tick_ - tonos_pix_tick_ > 600) {
++    tonos_pix_tick_ = tick_;
++    const double pos[5] = {0.06, 0.27, 0.48, 0.69, 0.90};
++    for (int t = 0; t < 5; ++t) {
++      double r, g, b;
++      if (!gradientColor(pos[t], r, g, b)) {
++        r = g = b = 1.0;
++      }
++      tonos_pix_[t] = {r, g, b};
++    }
++  }
++  if (!deriva_pix_ok_) {
++    deriva_pix_ok_ = true;
++    for (int i = 0; i < COLS; ++i) {
++      const double xn = (i + 0.5) / COLS;
++      deriva_pix_[i] = std::clamp(static_cast<int>(xn * 5.0), 0, 4);
++    }
++  }
++  // La deriva: cada columna pasea su tono al azar, paso a paso.
++  for (int i = 0; i < COLS; ++i) {
++    if (azar01() < 0.02) {
++      deriva_pix_[i] =
++          std::clamp(deriva_pix_[i] + (azar01() < 0.5 ? -1 : 1), 0, 4);
++    }
++  }
++  // Gigantes vencidos, fuera.
++  gigantes_pix_.erase(
++      std::remove_if(gigantes_pix_.begin(), gigantes_pix_.end(),
++                     [this](const GigantePix& gp) {
++                       return tick_ - gp.t0 > 13;
++                     }),
++      gigantes_pix_.end());
++  auto buscar_gigante = [this](int col, int k, int sgn) {
++    for (const auto& gp : gigantes_pix_) {
++      if (gp.col == col && gp.k == k && gp.sgn == sgn) {
++        return gp.t0;
++      }
++    }
++    return -1;
++  };
++  struct GiganteVista {
++    double cx, cy, esc;
++  };
++  std::vector<GiganteVista> gigantes;
 +  for (int i = 0; i < COLS; ++i) {
 +    const double xn = (i + 0.5) / COLS;
 +    const double borde = std::min(xn, 1.0 - xn) / 0.16;
@@ -2235,22 +2304,50 @@ index 00000000..4dba1e7e
 +    const double v = std::clamp(vs[idx], 0.0, 1.0) * taper;
 +    const int n = static_cast<int>(std::lround(v * 5.0));
 +    const double cx = i * paso + paso / 2.0;
-+    double r, g, b;
-+    if (!gradientColor(xn, r, g, b)) {
-+      r = g = b = 1.0;
-+    }
++    const auto& tono = tonos_pix_[deriva_pix_[i]];
 +    for (int k = 0; k < n; ++k) {
 +      const double luz = k * 0.09;
-+      const double rr = r + (1.0 - r) * luz;
-+      const double gg = g + (1.0 - g) * luz;
-+      const double bb = b + (1.0 - b) * luz;
-+      cr->set_source_rgba(rr, gg, bb, 0.95);
++      const double rr = tono[0] + (1.0 - tono[0]) * luz;
++      const double gg = tono[1] + (1.0 - tono[1]) * luz;
++      const double bb = tono[2] + (1.0 - tono[2]) * luz;
 +      for (int sgn = -1; sgn <= 1; sgn += 2) {
++        const int t0 = buscar_gigante(i, k, sgn);
++        double esc = 1.0;
++        if (t0 >= 0) {
++          const double edad = static_cast<double>(tick_ - t0);
++          esc = 1.0 + 0.9 * std::sin(M_PI * edad / 13.0);
++        } else if (azar01() < 0.004) {
++          // Nace el racimo: este bloque y sus vecinos.
++          for (int dk = -1; dk <= 1; ++dk) {
++            for (int ds = -1; ds <= 1; ds += 2) {
++              if (buscar_gigante(i, k + dk, ds) < 0) {
++                gigantes_pix_.push_back({i, k + dk, ds, tick_});
++              }
++            }
++          }
++        }
 +        const double cy = mid + sgn * (k + 0.5) * bh;
++        if (esc > 1.05) {
++          gigantes.push_back({cx, cy, esc});
++          continue;
++        }
++        cr->set_source_rgba(rr, gg, bb, 0.95);
 +        cr->rectangle(cx - bw / 2.0, cy - bh * 0.41, bw, bh * 0.82);
 +        cr->fill();
 +      }
 +    }
++  }
++  // Los gigantes se pintan AL FINAL: encima de los vecinos.
++  const auto& tg = tonos_pix_[4];
++  const double rr = tg[0] + (1.0 - tg[0]) * 0.45;
++  const double gg = tg[1] + (1.0 - tg[1]) * 0.45;
++  const double bb = tg[2] + (1.0 - tg[2]) * 0.45;
++  cr->set_source_rgba(rr, gg, bb, 0.97);
++  for (const auto& gv : gigantes) {
++    cr->rectangle(gv.cx - bw * gv.esc / 2.0,
++                  gv.cy - bh * 0.41 * gv.esc, bw * gv.esc,
++                  bh * 0.82 * gv.esc);
++    cr->fill();
 +  }
 +}
 +
