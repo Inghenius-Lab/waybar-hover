@@ -1102,10 +1102,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..91ccf82b
+index 00000000..4df0802a
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,1374 @@
+@@ -0,0 +1,1376 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1278,8 +1278,10 @@ index 00000000..91ccf82b
 +CampoDegradado campo_degradado;
 +
 +WaveCanvas::WaveCanvas() {
-+  // 25 ms tick (2026-11-09): the ONLY draw pacer, so frames land
-+  // evenly at 40 fps. Per tick it advances the rolling phase by
++  // 33 ms tick (2026-11-11: aligned to the 30 fps data — the
++  // old 25 ms tick repainted one of every four frames with no
++  // new data under it, pure cost on a U-series CPU). It is the
++  // ONLY draw pacer, so frames land evenly. Per tick it advances the rolling phase by
 +  // half the old step (same ~10 s turn) and eases the displayed
 +  // dot values halfway toward the latest data frame — the
 +  // interpolation the user asked for: data arrives at ~30 fps in
@@ -1288,7 +1290,7 @@ index 00000000..91ccf82b
 +  Glib::signal_timeout().connect(
 +      [this]() {
 +        ++tick_;
-+        phase_ = std::fmod(phase_ + 0.0025, 1.0);
++        phase_ = std::fmod(phase_ + 0.0033, 1.0);
 +        if (!values_.empty()) {
 +          if (disp_.size() != values_.size() || onda_ || chispas_ || simbolos_ || estela_) {
 +            disp_ = values_;
@@ -1331,7 +1333,7 @@ index 00000000..91ccf82b
 +        }
 +        return true;
 +      },
-+      25);
++      33);
 +}
 +
 +void WaveCanvas::setColor(const std::string& spec) { color_ = spec; }
