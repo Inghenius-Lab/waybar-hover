@@ -22,6 +22,14 @@ jobs:
           # apt sin reintentos se quedaba colgado en el espejo
           # (2026-11-11: dos intentos seguidos atascados en este
           # paso): update e install con reintento y tope de tiempo.
+          # 2026-11-11: security.ubuntu.com esta CAIDO globalmente
+          # (ubuntu.com tambien) y apt-get update muere por ese repo,
+          # aunque archive.ubuntu.com sigue accesible. Las librerias
+          # de compilacion vienen del archivo principal, no del de
+          # seguridad: se quita ese repo y se sigue.
+          for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do
+            [ -f "$f" ] && sudo sed -i '/security\.ubuntu\.com/d' "$f"
+          done
           ok=0
           for i in 1 2 3; do
             if sudo timeout 150 apt-get update -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30; then ok=1; break; fi
