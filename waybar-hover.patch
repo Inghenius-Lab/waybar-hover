@@ -1102,10 +1102,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..889b7188
+index 00000000..328a8580
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,1354 @@
+@@ -0,0 +1,1375 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1305,7 +1305,28 @@ index 00000000..889b7188
 +          // idle). Allocation changes and the state setters
 +          // request draws on their own, so the wave resumes
 +          // instantly when it grows back.
-+          if (get_allocation().get_width() >= 4) {
++          if (get_allocation().get_width() < 4) {
++            return;
++          }
++          // Flat-wave economy (same night): with an uncorked but
++          // silent stream (a paused video still holds the sink),
++          // the wave stays open breathing at 40 fps. The breath
++          // is a slow ~8 s sine, indistinguishable at 10 fps, so
++          // while the incoming frame is flat and the estela is
++          // the design in use, three of every four draws are
++          // skipped. Any real level restores the full rate on
++          // the very next tick.
++          const bool plano = estela_ && !simbolos_ && !onda_ && !error_ &&
++                             !chispas_ && !adn_ && !panal_ && !cuerdas_ &&
++                             [&] {
++                               for (double v : values_) {
++                                 if (v > 0.02) {
++                                   return false;
++                                 }
++                               }
++                               return true;
++                             }();
++          if (!plano || tick_ % 4 == 0) {
 +            queue_draw();
 +          }
 +        }
