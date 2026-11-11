@@ -22,15 +22,25 @@ jobs:
           # apt sin reintentos se quedaba colgado en el espejo
           # (2026-11-11: dos intentos seguidos atascados en este
           # paso): update e install con reintento y tope de tiempo.
-          for i in 1 2 3; do sudo timeout 150 apt-get update && break || sleep 10; done
-          for i in 1 2 3; do sudo timeout 600 apt-get install -y --no-install-recommends \
+          ok=0
+          for i in 1 2 3; do
+            if sudo timeout 150 apt-get update -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30; then ok=1; break; fi
+            sleep 10
+          done
+          [ "$ok" = 1 ] || { echo "ERROR: apt-get update fallo 3 veces"; exit 1; }
+          ok=0
+          for i in 1 2 3; do
+            if sudo timeout 600 apt-get install -y --no-install-recommends -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 \
             build-essential meson ninja-build pkg-config git \
             libgtkmm-3.0-dev libgtk-layer-shell-dev libsigc++-2.0-dev \
             libwayland-dev wayland-protocols libxkbcommon-dev libxkbregistry-dev \
             libnl-3-dev libnl-genl-3-dev libpulse-dev libmpdclient-dev \
             libudev-dev libevdev-dev libinput-dev libdbusmenu-gtk3-dev \
             libplayerctl-dev libpipewire-0.3-dev libupower-glib-dev \
-            libjson-glib-dev liblua5.4-dev libsndfile1-dev libasound2-dev && break || sleep 10; done
+            libjson-glib-dev liblua5.4-dev libsndfile1-dev libasound2-dev; then ok=1; break; fi
+            sleep 10
+          done
+          [ "$ok" = 1 ] || { echo "ERROR: apt-get install fallo 3 veces"; exit 1; }
 
       - name: Bajar Waybar y aplicar el parche
         run: |
