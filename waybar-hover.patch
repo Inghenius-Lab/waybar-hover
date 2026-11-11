@@ -152,10 +152,10 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..8a8c7c58
+index 00000000..12b5e1bf
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,162 @@
 +#pragma once
 +
 +#include <array>
@@ -205,6 +205,7 @@ index 00000000..8a8c7c58
 +  void setOleaje(bool oleaje);
 +  void setEstela(bool estela);
 +  void setRayo(bool rayo);
++  void setCapas(bool capas);
 +
 + protected:
 +  bool on_draw(const Cairo::RefPtr<Cairo::Context>& cr) override;
@@ -220,6 +221,7 @@ index 00000000..8a8c7c58
 +  void drawOleaje(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  void drawEstela(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  void drawRayo(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
++  void drawCapas(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  bool resolveColor(const std::string& name, double& r, double& g, double& b);
 +  bool gradientColor(double t, double& r, double& g, double& b);
 +  bool campoColor(double u, double& r, double& g, double& b);
@@ -248,6 +250,7 @@ index 00000000..8a8c7c58
 +  bool oleaje_ = false;
 +  bool estela_ = false;
 +  bool rayo_ = false;
++  bool capas_ = false;
 +  // Chispas vivas del rayo (diseno 5, 2026-11-11): nacen de la
 +  // linea segun el nivel, suben, caen con gravedad y se apagan.
 +  struct ChispaViva {
@@ -1114,10 +1117,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..15be4c2e
+index 00000000..a81283b8
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,1535 @@
+@@ -0,0 +1,1653 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1304,7 +1307,7 @@ index 00000000..15be4c2e
 +        ++tick_;
 +        phase_ = std::fmod(phase_ + 0.0033, 1.0);
 +        if (!values_.empty()) {
-+          if (disp_.size() != values_.size() || onda_ || chispas_ || simbolos_ || estela_ || rayo_) {
++          if (disp_.size() != values_.size() || onda_ || chispas_ || simbolos_ || estela_ || rayo_ || capas_) {
 +            disp_ = values_;
 +          } else {
 +            for (size_t i = 0; i < disp_.size(); ++i) {
@@ -1348,7 +1351,16 @@ index 00000000..15be4c2e
 +                                    }
 +                                    return true;
 +                                  }();
-+          if ((!plano && !plano_rayo) || tick_ % 4 == 0) {
++          const bool plano_capas = capas_ && !simbolos_ && !onda_ && !error_ &&
++                                   [&] {
++                                     for (double v : values_) {
++                                       if (v > 0.02) {
++                                         return false;
++                                       }
++                                     }
++                                     return true;
++                                   }();
++          if ((!plano && !plano_rayo && !plano_capas) || tick_ % 4 == 0) {
 +            queue_draw();
 +          }
 +          }
@@ -1428,6 +1440,13 @@ index 00000000..15be4c2e
 +void WaveCanvas::setEstela(bool estela) {
 +  if (estela != estela_) {
 +    estela_ = estela;
++    queue_draw();
++  }
++}
++
++void WaveCanvas::setCapas(bool capas) {
++  if (capas != capas_) {
++    capas_ = capas;
 +    queue_draw();
 +  }
 +}
@@ -1607,6 +1626,10 @@ index 00000000..15be4c2e
 +  }
 +  if (oleaje_) {
 +    drawOleaje(cr, w, h);
++    return false;
++  }
++  if (capas_) {
++    drawCapas(cr, w, h);
 +    return false;
 +  }
 +  if (rayo_) {
@@ -1877,6 +1900,100 @@ index 00000000..15be4c2e
 +      cr->stroke();
 +    }
 +  }
++}
++
++
++// ── Rayo en capas (musica; diseno 2 de la segunda tanda,
++// eleccion del usuario, 2026-11-11) ─────────────────────────
++// El rayo principal con su estela de ecos: la misma descarga
++// tal como se dibujo hace unos fotogramas, detras, mas gruesa
++// y mas transparente cuanto mas vieja: capas de la descarga.
++// La forma de cada eco sale de hist_ con la fase de entonces,
++// asi que los ecos son el rayo real de ese instante, no una
++// copia desplazada. Bordes y degradado: los de siempre.
++void WaveCanvas::drawCapas(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h) {
++  const double mid = h / 2.0;
++  const int M = 72;
++  auto muestras = [M](const std::vector<double>& src) {
++    std::vector<double> out(M, 0.0);
++    const size_t n = src.size();
++    if (n == 0) {
++      return out;
++    }
++    for (int i = 0; i < M; ++i) {
++      const double x = static_cast<double>(i) / (M - 1) * static_cast<double>(n - 1);
++      const size_t j = static_cast<size_t>(x);
++      double f = x - static_cast<double>(j);
++      f = (1.0 - std::cos(f * M_PI)) / 2.0;
++      const double a = src[j];
++      const double b = src[std::min(n - 1, j + 1)];
++      out[i] = a * (1.0 - f) + b * f;
++    }
++    return out;
++  };
++  auto ruido = [](double semilla) {
++    const double x = std::sin(semilla) * 43758.5453;
++    return (x - std::floor(x)) * 2.0 - 1.0;
++  };
++  const double margen = 4.0;
++  const double util = w - 2 * margen;
++  std::vector<double> xs, ys;
++  auto puntos = [&](const std::vector<double>& src, double fase) {
++    const auto sm = muestras(src);
++    xs.assign(M, 0.0);
++    ys.assign(M, 0.0);
++    for (int i = 0; i < M; ++i) {
++      const double t = static_cast<double>(i) / (M - 1);
++      const double borde = std::min(t, 1.0 - t) / 0.16;
++      const double ec = std::clamp(borde, 0.0, 1.0);
++      const double taper = ec * ec * (3.0 - 2.0 * ec);
++      const double v = std::clamp(sm[i], 0.0, 1.0);
++      const double amp = v * (h * 0.40) * taper;
++      xs[i] = margen + t * util;
++      ys[i] = mid + (std::sin(t * 9.0 - fase * 0.30) * 0.35 +
++                     ruido(i * 127.1 + fase * 311.7) * 0.38 -
++                     std::sin(t * 3.0 + fase * 0.10) * 0.72) * amp;
++    }
++  };
++  auto trazo = [&](double ancho, double alfa, bool nucleo) {
++    cr->set_line_width(ancho);
++    for (int i = 0; i + 1 < M; ++i) {
++      const double t = static_cast<double>(i) / (M - 1);
++      double r, g, b;
++      if (!gradientColor(t, r, g, b)) {
++        r = g = b = 1.0;
++      }
++      if (nucleo) {
++        r += (1.0 - r) * 0.62;
++        g += (1.0 - g) * 0.62;
++        b += (1.0 - b) * 0.62;
++      }
++      cr->set_source_rgba(r, g, b, alfa);
++      cr->move_to(xs[i], ys[i]);
++      cr->line_to(xs[i + 1], ys[i + 1]);
++      cr->stroke();
++    }
++  };
++  cr->set_line_cap(Cairo::LINE_CAP_ROUND);
++  cr->set_line_join(Cairo::LINE_JOIN_ROUND);
++  struct CapaE {
++    size_t ago;
++    double ancho;
++    double alfa;
++  };
++  const CapaE capas[4] = {{7, 4.2, 0.14}, {5, 3.6, 0.22},
++                          {3, 3.0, 0.34}, {2, 2.4, 0.50}};
++  for (const auto& c : capas) {
++    const std::vector<double>* src = &values_;
++    if (c.ago > 0 && hist_.size() > c.ago) {
++      src = &hist_[hist_.size() - 1 - c.ago];
++    }
++    puntos(*src, tick_ - static_cast<double>(c.ago));
++    trazo(c.ancho, c.alfa, false);
++  }
++  puntos(values_, tick_);
++  trazo(1.6, 0.95, false);
++  trazo(0.8, 0.80, true);
 +}
 +
 +
@@ -2558,6 +2675,7 @@ index 00000000..15be4c2e
 +      bool oleaje = false;
 +      bool estela = false;
 +      bool rayo = false;
++      bool capas = false;
 +      for (auto const& c : class_) {
 +        if (c == "mic") {
 +          mic = true;
@@ -2582,6 +2700,8 @@ index 00000000..15be4c2e
 +          estela = true;
 +        } else if (c == "rayo") {
 +          rayo = true;
++        } else if (c == "capas") {
++          capas = true;
 +        }
 +      }
 +      canvas_.setOnda(mic);
@@ -2595,6 +2715,7 @@ index 00000000..15be4c2e
 +      canvas_.setOleaje(oleaje);
 +      canvas_.setEstela(estela);
 +      canvas_.setRayo(rayo);
++      canvas_.setCapas(capas);
 +    }
 +    canvas_.setValues(values_);
 +    if (tooltipEnabled()) {
