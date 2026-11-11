@@ -152,10 +152,10 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..dd5771d9
+index 00000000..8a8c7c58
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,159 @@
 +#pragma once
 +
 +#include <array>
@@ -204,6 +204,7 @@ index 00000000..dd5771d9
 +  void setHexagonos(bool hexagonos);
 +  void setOleaje(bool oleaje);
 +  void setEstela(bool estela);
++  void setRayo(bool rayo);
 +
 + protected:
 +  bool on_draw(const Cairo::RefPtr<Cairo::Context>& cr) override;
@@ -218,6 +219,7 @@ index 00000000..dd5771d9
 +  void drawHexagonos(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  void drawOleaje(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  void drawEstela(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
++  void drawRayo(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  bool resolveColor(const std::string& name, double& r, double& g, double& b);
 +  bool gradientColor(double t, double& r, double& g, double& b);
 +  bool campoColor(double u, double& r, double& g, double& b);
@@ -245,6 +247,16 @@ index 00000000..dd5771d9
 +  bool hexagonos_ = false;
 +  bool oleaje_ = false;
 +  bool estela_ = false;
++  bool rayo_ = false;
++  // Chispas vivas del rayo (diseno 5, 2026-11-11): nacen de la
++  // linea segun el nivel, suben, caen con gravedad y se apagan.
++  struct ChispaViva {
++    double x, y, vx, vy;
++    int vida, vida0;
++    std::array<double, 3> rgb;
++  };
++  std::vector<ChispaViva> chispas_vivas_;
++  double spawn_acc_ = 0.0;
 +  int tick_ = 0;
 +  bool inner_right_ = false;
 +  std::string color_{"waybar-accent"};
@@ -1102,10 +1114,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..4df0802a
+index 00000000..102ac658
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,1376 @@
+@@ -0,0 +1,1535 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1292,7 +1304,7 @@ index 00000000..4df0802a
 +        ++tick_;
 +        phase_ = std::fmod(phase_ + 0.0033, 1.0);
 +        if (!values_.empty()) {
-+          if (disp_.size() != values_.size() || onda_ || chispas_ || simbolos_ || estela_) {
++          if (disp_.size() != values_.size() || onda_ || chispas_ || simbolos_ || estela_ || rayo_) {
 +            disp_ = values_;
 +          } else {
 +            for (size_t i = 0; i < disp_.size(); ++i) {
@@ -1326,7 +1338,17 @@ index 00000000..4df0802a
 +                               }
 +                               return true;
 +                             }();
-+          if (!plano || tick_ % 4 == 0) {
++          const bool plano_rayo = rayo_ && !simbolos_ && !onda_ && !error_ &&
++                                  chispas_vivas_.empty() &&
++                                  [&] {
++                                    for (double v : values_) {
++                                      if (v > 0.02) {
++                                        return false;
++                                      }
++                                    }
++                                    return true;
++                                  }();
++          if ((!plano && !plano_rayo) || tick_ % 4 == 0) {
 +            queue_draw();
 +          }
 +          }
@@ -1406,6 +1428,16 @@ index 00000000..4df0802a
 +void WaveCanvas::setEstela(bool estela) {
 +  if (estela != estela_) {
 +    estela_ = estela;
++    queue_draw();
++  }
++}
++
++void WaveCanvas::setRayo(bool rayo) {
++  if (rayo != rayo_) {
++    rayo_ = rayo;
++    if (!rayo_) {
++      chispas_vivas_.clear();
++    }
 +    queue_draw();
 +  }
 +}
@@ -1577,6 +1609,10 @@ index 00000000..4df0802a
 +    drawOleaje(cr, w, h);
 +    return false;
 +  }
++  if (rayo_) {
++    drawRayo(cr, w, h);
++    return false;
++  }
 +  // SIN MODO / MODO BORRADO (2026-11-09, orden suya): el diseno
 +  // de PUNTOS que vivia aqui como caida por defecto queda
 +  // ELIMINADO del binario — volvio solo cuando un reinicio
@@ -1708,6 +1744,137 @@ index 00000000..4df0802a
 +      cr->set_source_rgba(r, g, b, capa.alfa * (0.20 + 0.80 * taper));
 +      cr->rectangle(x - paso / 2 - 0.4, mid - th / 2, paso + 0.8, th);
 +      cr->fill();
++    }
++  }
++}
++
++
++// ── Rayo con chispas (musica y dictado; diseno 5 de la tanda
++// de rayos, eleccion del usuario, 2026-11-11) ──────────────────
++// Una linea electrica fina que crepita con la senal: el
++// desplazamiento de cada punto mezcla una onda lenta con un
++// ruido seco por fotograma proporcional al nivel, y de la
++// propia linea saltan chispas que suben, caen con gravedad y
++// se apagan en unas decimas, tantas mas cuanto mayor es el
++// nivel. BORDES como en la onda y la estela: smoothstep en el
++// 16 % externo — en los bordes la linea aterriza en el centro
++// y ahi no nacen chispas: nunca se ve cortada. El color es el
++// degradado dinamico de siempre, por tramo; lleva un nucleo
++// fino aclarado hacia el blanco y las chispas heredan el
++// color del punto donde nacen.
++void WaveCanvas::drawRayo(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h) {
++  const double mid = h / 2.0;
++  const int M = 72;
++  auto muestras = [M](const std::vector<double>& src) {
++    std::vector<double> out(M, 0.0);
++    const size_t n = src.size();
++    if (n == 0) {
++      return out;
++    }
++    for (int i = 0; i < M; ++i) {
++      const double x = static_cast<double>(i) / (M - 1) * static_cast<double>(n - 1);
++      const size_t j = static_cast<size_t>(x);
++      double f = x - static_cast<double>(j);
++      f = (1.0 - std::cos(f * M_PI)) / 2.0;
++      const double a = src[j];
++      const double b = src[std::min(n - 1, j + 1)];
++      out[i] = a * (1.0 - f) + b * f;
++    }
++    return out;
++  };
++  auto ruido = [](double semilla) {
++    const double x = std::sin(semilla) * 43758.5453;
++    return (x - std::floor(x)) * 2.0 - 1.0;
++  };
++  const auto sm = muestras(values_);
++  const double margen = 4.0;
++  const double util = w - 2 * margen;
++  std::vector<double> xs(M), ys(M), vs(M);
++  double vmax = 0.0;
++  for (int i = 0; i < M; ++i) {
++    const double t = static_cast<double>(i) / (M - 1);
++    const double borde = std::min(t, 1.0 - t) / 0.16;
++    const double ec = std::clamp(borde, 0.0, 1.0);
++    const double taper = ec * ec * (3.0 - 2.0 * ec);
++    const double v = std::clamp(sm[i], 0.0, 1.0);
++    vs[i] = v * taper;
++    vmax = std::max(vmax, v);
++    const double amp = v * (h * 0.40) * taper;
++    xs[i] = margen + t * util;
++    ys[i] = mid + (std::sin(t * 9.0 - tick_ * 0.30) * 0.35 +
++                   ruido(i * 127.1 + tick_ * 311.7) * 0.38 -
++                   std::sin(t * 3.0 + tick_ * 0.10) * 0.72) * amp;
++  }
++  // Chispas: nacen de la linea segun el nivel medio/alto.
++  spawn_acc_ += vmax * 1.5;
++  while (spawn_acc_ >= 1.0 && chispas_vivas_.size() < 90) {
++    spawn_acc_ -= 1.0;
++    int idx = -1;
++    for (int intento = 0; intento < 4 && idx < 0; ++intento) {
++      const int cand = static_cast<int>(
++          (ruido(tick_ * 17.3 + intento * 91.7 + spawn_acc_ * 13.1) * 0.5 + 0.5) * (M - 1));
++      if (cand >= 0 && cand < M && vs[cand] > 0.20) {
++        idx = cand;
++      }
++    }
++    if (idx < 0) {
++      continue;
++    }
++    const double t = static_cast<double>(idx) / (M - 1);
++    double r, g, b;
++    if (!gradientColor(t, r, g, b)) {
++      r = g = b = 1.0;
++    }
++    ChispaViva c;
++    c.x = xs[idx];
++    c.y = ys[idx];
++    c.vx = ruido(idx * 3.7 + tick_ * 7.9) * 0.45;
++    c.vy = -(0.35 + (ruido(idx * 9.3 + tick_ * 3.1) * 0.5 + 0.5) * 0.85);
++    c.vida0 = 8 + static_cast<int>((ruido(idx * 5.1 + tick_) * 0.5 + 0.5) * 6);
++    c.vida = c.vida0;
++    c.rgb = {r, g, b};
++    chispas_vivas_.push_back(c);
++  }
++  std::vector<ChispaViva> vivas;
++  vivas.reserve(chispas_vivas_.size());
++  for (auto& c : chispas_vivas_) {
++    c.x += c.vx;
++    c.y += c.vy;
++    c.vy += 0.055;
++    c.vida -= 1;
++    if (c.vida > 0 && c.x > -2 && c.x < w + 2 && c.y > -2 && c.y < h + 2) {
++      vivas.push_back(c);
++    }
++  }
++  chispas_vivas_.swap(vivas);
++  for (const auto& c : chispas_vivas_) {
++    const double a = 0.9 * static_cast<double>(c.vida) / c.vida0;
++    cr->set_source_rgba(c.rgb[0], c.rgb[1], c.rgb[2], a);
++    cr->arc(c.x, c.y, 0.9, 0, 2 * M_PI);
++    cr->fill();
++  }
++  // La linea: trazo por tramos con el degradado, y nucleo claro.
++  cr->set_line_cap(Cairo::LINE_CAP_ROUND);
++  cr->set_line_join(Cairo::LINE_JOIN_ROUND);
++  for (int pasada = 0; pasada < 2; ++pasada) {
++    cr->set_line_width(pasada == 0 ? 1.5 : 0.7);
++    for (int i = 0; i + 1 < M; ++i) {
++      const double t = static_cast<double>(i) / (M - 1);
++      double r, g, b;
++      if (!gradientColor(t, r, g, b)) {
++        r = g = b = 1.0;
++      }
++      if (pasada == 1) {
++        r += (1.0 - r) * 0.62;
++        g += (1.0 - g) * 0.62;
++        b += (1.0 - b) * 0.62;
++        cr->set_source_rgba(r, g, b, 0.80);
++      } else {
++        cr->set_source_rgba(r, g, b, 0.95);
++      }
++      cr->move_to(xs[i], ys[i]);
++      cr->line_to(xs[i + 1], ys[i + 1]);
++      cr->stroke();
 +    }
 +  }
 +}
@@ -2390,6 +2557,7 @@ index 00000000..4df0802a
 +      bool hexagonos = false;
 +      bool oleaje = false;
 +      bool estela = false;
++      bool rayo = false;
 +      for (auto const& c : class_) {
 +        if (c == "mic") {
 +          mic = true;
@@ -2412,6 +2580,8 @@ index 00000000..4df0802a
 +          oleaje = true;
 +        } else if (c == "estela") {
 +          estela = true;
++        } else if (c == "rayo") {
++          rayo = true;
 +        }
 +      }
 +      canvas_.setOnda(mic);
@@ -2424,6 +2594,7 @@ index 00000000..4df0802a
 +      canvas_.setHexagonos(hexagonos);
 +      canvas_.setOleaje(oleaje);
 +      canvas_.setEstela(estela);
++      canvas_.setRayo(rayo);
 +    }
 +    canvas_.setValues(values_);
 +    if (tooltipEnabled()) {
