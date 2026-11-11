@@ -152,10 +152,10 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..62d47587
+index 00000000..e87a2cea
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,184 @@
+@@ -0,0 +1,187 @@
 +#pragma once
 +
 +#include <array>
@@ -282,6 +282,9 @@ index 00000000..62d47587
 +  bool deriva_pix_ok_ = false;
 +  std::array<std::array<double, 3>, 5> tonos_pix_{};
 +  int tonos_pix_tick_ = -100000;
++  // Ultimo fotograma con sonido del pixel: se sigue
++  // dibujando durante la espera de 5 s en silencio.
++  std::vector<double> ultimo_frame_pix_;
 +  int tick_ = 0;
 +  bool inner_right_ = false;
 +  std::string color_{"waybar-accent"};
@@ -1139,10 +1142,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..83c30098
+index 00000000..b62187bc
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,2093 @@
+@@ -0,0 +1,2113 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -2240,7 +2243,27 @@ index 00000000..83c30098
 +    }
 +    return out;
 +  };
-+  const auto vs = muestras(values_);
++  // La regla de los 5 s, restaurada para el pixel
++  // (2026-11-11): el modulo mantiene el ancho 5 s en
++  // silencio antes de colapsar, pero el pixel con los
++  // valores a cero no dibuja NADA, y el efecto parecia
++  // desaparecer al instante (la estela en cambio dejaba
++  // su linea plana visible). Ahora el lienzo guarda el
++  // ultimo fotograma con sonido y lo sigue dibujando
++  // durante la espera, con su deriva y sus gigantes
++  // vivos: la espera se VE, como debe ser.
++  double vmax = 0.0;
++  for (double v : values_) {
++    vmax = std::max(vmax, v);
++  }
++  if (vmax > 0.05) {
++    ultimo_frame_pix_ = values_;
++  }
++  const std::vector<double>& fuente =
++      (vmax <= 0.02 && !ultimo_frame_pix_.empty())
++          ? ultimo_frame_pix_
++          : values_;
++  const auto vs = muestras(fuente);
 +  const int COLS = 21;
 +  const double paso = w / COLS;
 +  const double bw = paso * 0.78;
