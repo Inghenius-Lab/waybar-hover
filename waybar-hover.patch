@@ -1058,7 +1058,7 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..38452bbc
+index 00000000..32a6d8f9
 --- /dev/null
 +++ b/src/modules/wave.cpp
 @@ -0,0 +1,1344 @@
@@ -1276,13 +1276,13 @@ index 00000000..38452bbc
 +    simbolos_ = simbolos;
 +    queue_draw();
 +  }
++}
 +
 +void WaveCanvas::setError(bool error) {
 +  if (error != error_) {
 +    error_ = error;
 +    queue_draw();
 +  }
-+}
 +}
 +
 +void WaveCanvas::setChispas(bool chispas) {
