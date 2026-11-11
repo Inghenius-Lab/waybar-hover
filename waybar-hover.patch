@@ -152,10 +152,10 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..b96a92e2
+index 00000000..5f763427
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,173 @@
 +#pragma once
 +
 +#include <array>
@@ -207,6 +207,8 @@ index 00000000..b96a92e2
 +  void setRayo(bool rayo);
 +  void setCapas(bool capas);
 +  void setRamificado(bool ramificado);
++  void setPixel(bool pixel);
++  void setConstelacion(bool constelacion);
 +
 + protected:
 +  bool on_draw(const Cairo::RefPtr<Cairo::Context>& cr) override;
@@ -224,6 +226,8 @@ index 00000000..b96a92e2
 +  void drawRayo(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  void drawCapas(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  void drawRamificado(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
++  void drawPixel(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
++  void drawConstelacion(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  bool resolveColor(const std::string& name, double& r, double& g, double& b);
 +  bool gradientColor(double t, double& r, double& g, double& b);
 +  bool campoColor(double u, double& r, double& g, double& b);
@@ -254,6 +258,8 @@ index 00000000..b96a92e2
 +  bool rayo_ = false;
 +  bool capas_ = false;
 +  bool ramificado_ = false;
++  bool pixel_ = false;
++  bool constelacion_ = false;
 +  // Chispas vivas del rayo (diseno 5, 2026-11-11): nacen de la
 +  // linea segun el nivel, suben, caen con gravedad y se apagan.
 +  struct ChispaViva {
@@ -1122,10 +1128,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..e2286c04
+index 00000000..4dba1e7e
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,1813 @@
+@@ -0,0 +1,2007 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1312,7 +1318,7 @@ index 00000000..e2286c04
 +        ++tick_;
 +        phase_ = std::fmod(phase_ + 0.0033, 1.0);
 +        if (!values_.empty()) {
-+          if (disp_.size() != values_.size() || onda_ || chispas_ || simbolos_ || estela_ || rayo_ || capas_ || ramificado_) {
++          if (disp_.size() != values_.size() || onda_ || chispas_ || simbolos_ || estela_ || rayo_ || capas_ || ramificado_ || pixel_ || constelacion_) {
 +            disp_ = values_;
 +          } else {
 +            for (size_t i = 0; i < disp_.size(); ++i) {
@@ -1375,7 +1381,16 @@ index 00000000..e2286c04
 +                                   }
 +                                   return true;
 +                                 }();
-+          if ((!plano && !plano_rayo && !plano_capas && !plano_ram) || tick_ % 4 == 0) {
++          const bool plano_pixel = pixel_ && !simbolos_ && !onda_ && !error_ &&
++                                   [&] {
++                                     for (double v : values_) {
++                                       if (v > 0.02) {
++                                         return false;
++                                       }
++                                     }
++                                     return true;
++                                   }();
++          if ((!plano && !plano_rayo && !plano_capas && !plano_ram && !plano_pixel) || tick_ % 4 == 0) {
 +            queue_draw();
 +          }
 +          }
@@ -1472,6 +1487,20 @@ index 00000000..e2286c04
 +    if (!ramificado_) {
 +      chispas_ram_.clear();
 +    }
++    queue_draw();
++  }
++}
++
++void WaveCanvas::setPixel(bool pixel) {
++  if (pixel != pixel_) {
++    pixel_ = pixel;
++    queue_draw();
++  }
++}
++
++void WaveCanvas::setConstelacion(bool constelacion) {
++  if (constelacion != constelacion_) {
++    constelacion_ = constelacion;
 +    queue_draw();
 +  }
 +}
@@ -1651,6 +1680,14 @@ index 00000000..e2286c04
 +  }
 +  if (oleaje_) {
 +    drawOleaje(cr, w, h);
++    return false;
++  }
++  if (pixel_) {
++    drawPixel(cr, w, h);
++    return false;
++  }
++  if (constelacion_) {
++    drawConstelacion(cr, w, h);
 +    return false;
 +  }
 +  if (ramificado_) {
@@ -2155,6 +2192,161 @@ index 00000000..e2286c04
 +    cr->fill();
 +  }
 +  chispas_ram_.swap(vivas);
++}
++
++
++// ── Bloques pixel (musica; diseno 3 de la tanda diversa,
++// eleccion suya del 2026-11-11: queda PUESTO en musica) ─────
++// Columnas de cubitos retro que se apilan desde el centro
++// hacia arriba y hacia abajo segun el nivel, con la
++// envolvente de los laterales: en los extremos la pila muere
++// a ras del centro. Color del degradado, aclarado por altura.
++void WaveCanvas::drawPixel(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h) {
++  const double mid = h / 2.0;
++  const int M = 72;
++  auto muestras = [M](const std::vector<double>& src) {
++    std::vector<double> out(M, 0.0);
++    const size_t n = src.size();
++    if (n == 0) {
++      return out;
++    }
++    for (int i = 0; i < M; ++i) {
++      const double x = static_cast<double>(i) / (M - 1) * static_cast<double>(n - 1);
++      const size_t j = static_cast<size_t>(x);
++      double f = x - static_cast<double>(j);
++      f = (1.0 - std::cos(f * M_PI)) / 2.0;
++      const double a = src[j];
++      const double b = src[std::min(n - 1, j + 1)];
++      out[i] = a * (1.0 - f) + b * f;
++    }
++    return out;
++  };
++  const auto vs = muestras(values_);
++  const int COLS = 21;
++  const double paso = w / COLS;
++  const double bw = paso * 0.78;
++  const double bh = (h / 2.0) / 5.4;
++  for (int i = 0; i < COLS; ++i) {
++    const double xn = (i + 0.5) / COLS;
++    const double borde = std::min(xn, 1.0 - xn) / 0.16;
++    const double ec = std::clamp(borde, 0.0, 1.0);
++    const double taper = ec * ec * (3.0 - 2.0 * ec);
++    const int idx = std::clamp(static_cast<int>(xn * (M - 1)), 0, M - 1);
++    const double v = std::clamp(vs[idx], 0.0, 1.0) * taper;
++    const int n = static_cast<int>(std::lround(v * 5.0));
++    const double cx = i * paso + paso / 2.0;
++    double r, g, b;
++    if (!gradientColor(xn, r, g, b)) {
++      r = g = b = 1.0;
++    }
++    for (int k = 0; k < n; ++k) {
++      const double luz = k * 0.09;
++      const double rr = r + (1.0 - r) * luz;
++      const double gg = g + (1.0 - g) * luz;
++      const double bb = b + (1.0 - b) * luz;
++      cr->set_source_rgba(rr, gg, bb, 0.95);
++      for (int sgn = -1; sgn <= 1; sgn += 2) {
++        const double cy = mid + sgn * (k + 0.5) * bh;
++        cr->rectangle(cx - bw / 2.0, cy - bh * 0.41, bw, bh * 0.82);
++        cr->fill();
++      }
++    }
++  }
++}
++
++
++// ── Constelacion (creada a eleccion suya, 2026-11-11, con
++// la dinamica que pidio: puntos con MUCHO mas movimiento,
++// deriva y agitacion coherentes con lo que suena) ──────────
++// Estrellas que NO estan fijas: cada una deriva despacio por
++// el lienzo (campos seno desfasados), se AGITA en
++// proporcion al nivel de su zona (a mas sonido, mas
++// vibracion y mas brillo), titila mas rapido donde mas
++// suena y se conecta con hilos de luz con sus vecinas
++// cercanas cuando ambas zonas estan vivas. Sin estado: la
++// posicion es funcion pura del indice, el tick y el nivel.
++void WaveCanvas::drawConstelacion(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h) {
++  const double mid = h / 2.0;
++  const int M = 72;
++  auto muestras = [M](const std::vector<double>& src) {
++    std::vector<double> out(M, 0.0);
++    const size_t n = src.size();
++    if (n == 0) {
++      return out;
++    }
++    for (int i = 0; i < M; ++i) {
++      const double x = static_cast<double>(i) / (M - 1) * static_cast<double>(n - 1);
++      const size_t j = static_cast<size_t>(x);
++      double f = x - static_cast<double>(j);
++      f = (1.0 - std::cos(f * M_PI)) / 2.0;
++      const double a = src[j];
++      const double b = src[std::min(n - 1, j + 1)];
++      out[i] = a * (1.0 - f) + b * f;
++    }
++    return out;
++  };
++  auto ruido = [](double semilla) {
++    const double x = std::sin(semilla) * 43758.5453;
++    return x - std::floor(x);
++  };
++  const auto vs = muestras(values_);
++  const int NS = 22;
++  const double margen = 4.0;
++  const double util = w - 2 * margen;
++  struct Estrella {
++    double x, y, v, r;
++  };
++  std::vector<Estrella> es;
++  es.reserve(NS);
++  for (int i = 0; i < NS; ++i) {
++    const double xn0 = 0.03 + 0.94 * ruido(i * 13.73 + 4.7);
++    const double yo0 = (ruido(i * 29.31 + 9.1) - 0.5) * 0.88;
++    const double xn = xn0 + 0.030 * std::sin(tick_ * 0.011 + i * 2.39);
++    const int idx = std::clamp(static_cast<int>(xn * (M - 1)), 0, M - 1);
++    const double v = std::clamp(vs[idx], 0.0, 1.0);
++    const double yo = yo0 + 0.10 * std::sin(tick_ * 0.017 + i * 1.71);
++    const double jx = (ruido(i * 91.7 + tick_ * 13.1) - 0.5) * v * 3.2;
++    const double jy = (ruido(i * 57.3 + tick_ * 17.7) - 0.5) * v * 2.4;
++    Estrella e;
++    e.x = margen + xn * util + jx;
++    e.y = mid + yo * h * (0.5 + 0.6 * v) + jy;
++    e.v = v;
++    const double titila = 0.5 + 0.5 * std::sin(tick_ * (0.10 + 0.25 * v) + i * 2.7);
++    e.r = (0.55 + v * 1.5) * (0.7 + 0.5 * titila);
++    es.push_back(e);
++  }
++  cr->set_line_width(0.7);
++  for (int i = 0; i < NS; ++i) {
++    for (int j = i + 1; j < NS; ++j) {
++      const double dx = es[i].x - es[j].x;
++      const double dy = es[i].y - es[j].y;
++      const double dist = std::sqrt(dx * dx + dy * dy);
++      const double cerca = w * 0.30;
++      if (dist < cerca) {
++        const double fuerza = std::min(es[i].v, es[j].v);
++        const double a = 0.55 * fuerza * (1.0 - dist / cerca);
++        if (a > 0.02) {
++          cr->set_source_rgba(0.85, 0.97, 0.72, a);
++          cr->move_to(es[i].x, es[i].y);
++          cr->line_to(es[j].x, es[j].y);
++          cr->stroke();
++        }
++      }
++    }
++  }
++  for (const auto& e : es) {
++    const double xn = (e.x - margen) / util;
++    double r, g, b;
++    if (!gradientColor(std::clamp(xn, 0.0, 1.0), r, g, b)) {
++      r = g = b = 1.0;
++    }
++    cr->set_source_rgba(r, g, b, 0.95);
++    cr->arc(e.x, e.y, e.r, 0, 2 * M_PI);
++    cr->fill();
++    cr->set_source_rgba(0.96, 1.0, 0.88, 0.9);
++    cr->arc(e.x, e.y, e.r * 0.45, 0, 2 * M_PI);
++    cr->fill();
++  }
 +}
 +
 +
@@ -2838,6 +3030,8 @@ index 00000000..e2286c04
 +      bool rayo = false;
 +      bool capas = false;
 +      bool ramificado = false;
++      bool pixel = false;
++      bool constelacion = false;
 +      for (auto const& c : class_) {
 +        if (c == "mic") {
 +          mic = true;
@@ -2866,6 +3060,10 @@ index 00000000..e2286c04
 +          capas = true;
 +        } else if (c == "ramificado") {
 +          ramificado = true;
++        } else if (c == "pixel") {
++          pixel = true;
++        } else if (c == "constelacion") {
++          constelacion = true;
 +        }
 +      }
 +      canvas_.setOnda(mic);
@@ -2881,6 +3079,8 @@ index 00000000..e2286c04
 +      canvas_.setRayo(rayo);
 +      canvas_.setCapas(capas);
 +      canvas_.setRamificado(ramificado);
++      canvas_.setPixel(pixel);
++      canvas_.setConstelacion(constelacion);
 +    }
 +    canvas_.setValues(values_);
 +    if (tooltipEnabled()) {
