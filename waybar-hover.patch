@@ -10,6 +10,18 @@ index 3fea52f6..379b8722 100644
    static const inline std::map<std::pair<uint, GdkEventType>, std::string> eventMap_{
        {std::make_pair(1, GdkEventType::GDK_BUTTON_PRESS), "on-click"},
        {std::make_pair(1, GdkEventType::GDK_BUTTON_RELEASE), "on-click-release"},
+diff --git a/include/modules/image.hpp b/include/modules/image.hpp
+index 5b4ac818..f4fa7057 100644
+--- a/include/modules/image.hpp
++++ b/include/modules/image.hpp
+@@ -30,6 +30,7 @@ class SingleImageStrategy : public IStrategy {
+   SingleImageStrategy(const std::string&, const Json::Value&, const std::string&, Gtk::EventBox&,
+                       bool);
+   ~SingleImageStrategy() override = default;
++  void fetch() override;
+   void update() override;
+ 
+  private:
 diff --git a/include/modules/ring.hpp b/include/modules/ring.hpp
 new file mode 100644
 index 00000000..0acfcd15
@@ -444,6 +456,38 @@ index 86abb43d..82306b4f 100644
      if (ref.compare(0, 5, "cffi/") == 0 && ref.size() > 5) {
        return new waybar::modules::CFFI(ref.substr(5), id, config_[name]);
      }
+diff --git a/src/modules/image.cpp b/src/modules/image.cpp
+index 8c8132d7..2d9d11aa 100644
+--- a/src/modules/image.cpp
++++ b/src/modules/image.cpp
+@@ -248,6 +248,18 @@ SingleImageStrategy::SingleImageStrategy(const std::string& id, const Json::Valu
+   }
+ }
+ 
++void SingleImageStrategy::fetch() {
++  // Run the (blocking) user script off the GTK main thread so the
++  // bar isn't stalled by it. The script behind image#mpris-icon
++  // (player-daemon.sh | jq) can block for many seconds on D-Bus
++  // player queries (playerctl against a wedged media session);
++  // running it inside update() froze the whole bar — clock,
++  // titles and every module — for minutes at a time.
++  if (config_["exec"].isString()) {
++    output_ = util::command::exec(config_["exec"].asString(), "");
++  }
++}
++
+ void SingleImageStrategy::update() {
+   if (config_["path"].isString()) {
+     auto p = config_["path"].asString();
+@@ -256,7 +268,7 @@ void SingleImageStrategy::update() {
+     // otherwise keep the literal path so paths with spaces/metacharacters still work.
+     path_ = (result.size() == 1) ? result.front() : p;
+   } else if (config_["exec"].isString()) {
+-    output_ = util::command::exec(config_["exec"].asString(), "");
++    // exec output was captured by fetch() on the worker thread
+     parseOutputRaw();
+     // expand path if "~" or "$HOME" is present in original path
+     auto result = Config::tryExpandPath(path_, "");
 diff --git a/src/modules/ring.cpp b/src/modules/ring.cpp
 new file mode 100644
 index 00000000..ac01bfc2
