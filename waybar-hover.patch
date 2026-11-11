@@ -1102,10 +1102,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..32a6d8f9
+index 00000000..889b7188
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,1344 @@
+@@ -0,0 +1,1354 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1297,7 +1297,17 @@ index 00000000..32a6d8f9
 +              disp_[i] += (values_[i] - disp_[i]) * 0.5;
 +            }
 +          }
-+          queue_draw();
++          // Only ask GTK for a frame while the canvas is really
++          // allocated: after silence the wave collapses to zero
++          // width, and the 40 fps draw requests kept the whole
++          // bar's main loop (and the compositor) busy forever
++          // painting an invisible widget (~20% of a core at
++          // idle). Allocation changes and the state setters
++          // request draws on their own, so the wave resumes
++          // instantly when it grows back.
++          if (get_allocation().get_width() >= 4) {
++            queue_draw();
++          }
 +        }
 +        return true;
 +      },
