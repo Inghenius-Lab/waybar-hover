@@ -1102,10 +1102,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..328a8580
+index 00000000..91ccf82b
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,1375 @@
+@@ -0,0 +1,1374 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1305,9 +1305,7 @@ index 00000000..328a8580
 +          // idle). Allocation changes and the state setters
 +          // request draws on their own, so the wave resumes
 +          // instantly when it grows back.
-+          if (get_allocation().get_width() < 4) {
-+            return;
-+          }
++          if (get_allocation().get_width() >= 4) {
 +          // Flat-wave economy (same night): with an uncorked but
 +          // silent stream (a paused video still holds the sink),
 +          // the wave stays open breathing at 40 fps. The breath
@@ -1328,6 +1326,7 @@ index 00000000..328a8580
 +                             }();
 +          if (!plano || tick_ % 4 == 0) {
 +            queue_draw();
++          }
 +          }
 +        }
 +        return true;
