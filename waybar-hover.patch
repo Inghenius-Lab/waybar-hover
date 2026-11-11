@@ -140,10 +140,10 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..6c56538e
+index 00000000..dd5771d9
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,145 @@
+@@ -0,0 +1,147 @@
 +#pragma once
 +
 +#include <array>
@@ -185,6 +185,7 @@ index 00000000..6c56538e
 +  void setInnerRight(bool inner_right);
 +  void setChispas(bool chispas);
 +  void setSimbolos(bool simbolos);
++  void setError(bool error);
 +  void setCuerdas(bool cuerdas);
 +  void setAdn(bool adn);
 +  void setPanal(bool panal);
@@ -225,6 +226,7 @@ index 00000000..6c56538e
 +  bool onda_ = false;
 +  bool chispas_ = false;
 +  bool simbolos_ = false;
++  bool error_ = false;
 +  bool cuerdas_ = false;
 +  bool adn_ = false;
 +  bool panal_ = false;
@@ -1056,10 +1058,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..66cb4093
+index 00000000..38452bbc
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,1324 @@
+@@ -0,0 +1,1344 @@
 +#include "modules/wave.hpp"
 +
 +#include <gtk/gtk.h>
@@ -1274,6 +1276,13 @@ index 00000000..66cb4093
 +    simbolos_ = simbolos;
 +    queue_draw();
 +  }
++
++void WaveCanvas::setError(bool error) {
++  if (error != error_) {
++    error_ = error;
++    queue_draw();
++  }
++}
 +}
 +
 +void WaveCanvas::setChispas(bool chispas) {
@@ -1983,7 +1992,15 @@ index 00000000..66cb4093
 +    Pango::FontDescription fd("Sans Bold");
 +    fd.set_absolute_size(tam * 1024);  // 1024 = PANGO_SCALE
 +    double r, g, b;
-+    if (!gradientColor(t, r, g, b)) {
++    if (error_) {
++      // Error del dictado (2026-11-10, a su orden): la MISMA
++      // animacion de simbolos, en ROJO — el fallo se reconoce
++      // al instante, sin leer nada.
++      const double u = 0.5 + 0.5 * std::sin(tick_ * 0.05 + t * 3.14159);
++      r = 1.0;
++      g = 0.08 + 0.25 * u;
++      b = 0.12 + 0.20 * u;
++    } else if (!gradientColor(t, r, g, b)) {
 +      r = g = b = 1.0;
 +    }
 +    const double alfa = 0.60 + 0.40 * hash01(static_cast<int>(i) * 606 + ciclo);
@@ -2290,6 +2307,7 @@ index 00000000..66cb4093
 +      bool mic = false;
 +      bool chispas = false;
 +      bool simbolos = false;
++      bool error = false;
 +      bool cuerdas = false;
 +      bool adn = false;
 +      bool panal = false;
@@ -2303,6 +2321,9 @@ index 00000000..66cb4093
 +          chispas = true;
 +        } else if (c == "simbolos") {
 +          simbolos = true;
++        } else if (c == "error") {
++          simbolos = true;
++          error = true;
 +        } else if (c == "cuerdas") {
 +          cuerdas = true;
 +        } else if (c == "adn") {
@@ -2320,6 +2341,7 @@ index 00000000..66cb4093
 +      canvas_.setOnda(mic);
 +      canvas_.setChispas(chispas);
 +      canvas_.setSimbolos(simbolos);
++      canvas_.setError(error);
 +      canvas_.setCuerdas(cuerdas);
 +      canvas_.setAdn(adn);
 +      canvas_.setPanal(panal);
