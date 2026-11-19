@@ -152,10 +152,10 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..efd13a3f
+index 00000000..6c304521
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,200 @@
 +#pragma once
 +
 +#include <array>
@@ -211,6 +211,7 @@ index 00000000..efd13a3f
 +  void setConstelacion(bool constelacion);
 +  // Iconos animados del hexagono (2026-11-19): id vacio = modo normal.
 +  void setIcono(const std::string& id, double velocidad = 1.0);
++  void setIconoSigue(const std::string& id);
 +
 + protected:
 +  bool on_draw(const Cairo::RefPtr<Cairo::Context>& cr) override;
@@ -266,6 +267,7 @@ index 00000000..efd13a3f
 +  // Modo icono: id del dibujo, tick en que se puso, velocidad, y
 +  // colores del tema resueltos (cache ~1 s).
 +  std::string icono_;
++  std::string icono_sigue_ = "reposo-t";
 +  int icono_t0_ = 0;
 +  double icono_vel_ = 1.0;
 +  std::array<double, 12> icono_cols_{};
@@ -1153,10 +1155,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..9594700e
+index 00000000..efe43425
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,2236 @@
+@@ -0,0 +1,2252 @@
 +#include "modules/wave.hpp"
 +#include "modules/wave_iconos.hpp"
 +
@@ -1346,7 +1348,7 @@ index 00000000..9594700e
 +        if (!icono_.empty()) {
 +          // Iconos (2026-11-19): 15 fps (10 en reposo), y NADA si el
 +          // lienzo no esta a la vista (barra oculta, ancho 0).
-+          const int cada = icono_ == "reposo" ? 3 : 2;
++          const int cada = iconos::esReposo(icono_) ? 3 : 2;
 +          if (tick_ % cada == 0 && get_mapped() && get_allocation().get_width() >= 16) {
 +            queue_draw();
 +          }
@@ -1543,6 +1545,14 @@ index 00000000..9594700e
 +  queue_draw();
 +}
 +
++// Reposo que nace al terminar un logo de una pasada (lo elige
++// icono-estado.sh con la clase r-<id>; ver ~/.config/waybar/icono-logo.conf).
++void WaveCanvas::setIconoSigue(const std::string& id) {
++  if (iconos::esReposo(id)) {
++    icono_sigue_ = id;
++  }
++}
++
 +void WaveCanvas::drawIcono(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h) {
 +  if (w < 16 || h < 8) {
 +    return;
@@ -1577,12 +1587,12 @@ index 00000000..9594700e
 +  // nace el reposo, sin salto y sin bucle.
 +  const double dur = iconos::duracion(icono_);
 +  if (dur > 0.0 && t >= dur) {
-+    icono_ = "reposo";
++    icono_ = iconos::esReposo(icono_sigue_) ? icono_sigue_ : std::string("reposo-t");
 +    icono_t0_ = tick_;
 +    icono_vel_ = 1.0;
 +    t = 0.0;
 +  }
-+  const double abre = icono_ == "reposo" ? iconos::suave(t / 1.2) : 1.0;
++  const double abre = iconos::esReposo(icono_) ? iconos::suave(t / 1.2) : 1.0;
 +  iconos::dibujar(cr->cobj(), icono_, t, w, h, pal, abre);
 +}
 +
@@ -3219,15 +3229,23 @@ index 00000000..9594700e
 +      // icono aparece y desaparece de una vez (lo releva la caratula).
 +      std::string id;
 +      bool fuera = false;
-+      double vel = 1.0;
++      bool rapido = false;
 +      for (auto const& c : class_) {
 +        if (c == "hide") {
 +          fuera = true;
 +        } else if (c == "rapido") {
-+          vel = 3.0;
++          rapido = true;
 +        } else if (c.size() > 2 && c.compare(0, 2, "i-") == 0 && iconos::conocido(c.substr(2))) {
 +          id = c.substr(2);
++        } else if (c.size() > 2 && c.compare(0, 2, "r-") == 0) {
++          canvas_.setIconoSigue(c.substr(2));
 +        }
++      }
++      // "rapido" (despertar): el logo entero en 3 s, dure lo que dure su ciclo.
++      double vel = 1.0;
++      if (rapido) {
++        const double d = iconos::duracion(id);
++        vel = d > 3.0 ? d / 3.0 : 3.0;
 +      }
 +      hold_conn_.disconnect();
 +      anim_conn_.disconnect();
