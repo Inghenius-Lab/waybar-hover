@@ -356,6 +356,1607 @@ index 00000000..6c304521
 +};
 +
 +}  // namespace waybar::modules
+diff --git a/include/modules/wave_iconos.hpp b/include/modules/wave_iconos.hpp
+new file mode 100644
+index 00000000..7508f185
+--- /dev/null
++++ b/include/modules/wave_iconos.hpp
+@@ -0,0 +1,1595 @@
++#pragma once
++// wave_iconos.hpp — iconos animados del hexagono (2026-11-19).
++// Port fiel a Cairo de ~/workspace/wakeword-elemental/logo/iconos-dibujo.js
++// (iconos-hexagono-5.html: 14 de actividad + 9 variantes del logo). Lienzo logico de 64x64 con centro
++// (32,32); todo son lineas, arcos y poligonos con alfa. Cabecera unica, sin
++// estado global: dibujar(cr, id, t, w, h, paleta).
++//
++// Guardas: lienzos degenerados no dibujan; ningun std::clamp con limites
++// calculados (ya causo rc=134 en drawConstelacion).
++
++#include <cairo.h>
++
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <cstdio>
++#include <functional>
++#include <string>
++#include <vector>
++
++namespace waybar::modules::iconos {
++
++using P = std::array<double, 3>;
++struct Col {
++  double r, g, b;
++};
++struct Paleta {
++  Col verde{0.553, 0.961, 0.804};   // interior
++  Col azul{0.490, 0.827, 0.988};    // hexagono
++  Col rojo{1.0, 0.541, 0.502};      // error
++  Col blanco{0.949, 1.0, 0.980};
++  Col ambar{0.984, 0.749, 0.467};
++  Col rosa{0.961, 0.659, 0.910};
++};
++
++constexpr double C = 32.0, R = 28.0, PI = 3.14159265358979323846, TAU = 2.0 * PI, F = 150.0;
++
++inline double lim01(double v) {
++  if (!(v > 0.0)) return 0.0;  // tambien atrapa NaN
++  return v > 1.0 ? 1.0 : v;
++}
++
++struct X {
++  cairo_t* c;
++  Paleta pal;
++  Col ss{1, 1, 1}, fs{1, 1, 1};
++  double ga = 1.0, lw = 1.0;
++  bool chico = false;  // lienzo pequeno (barra): se quitan aristas traseras
++#ifdef ICONOS_TRAZA
++  std::vector<double> tz_;
++  void traza(const char* op, const Col& k, double ancho) {
++    std::printf("%s %.3f %.3f %.3f %.4f %.3f", op, k.r, k.g, k.b, lim01(ga), ancho);
++    for (double v : tz_) std::printf(" %.3f", v);
++    std::printf("\n");
++  }
++#endif
++  void begin() {
++    cairo_new_path(c);
++#ifdef ICONOS_TRAZA
++    tz_.clear();
++#endif
++  }
++  void mt(double x, double y) {
++    cairo_move_to(c, x, y);
++#ifdef ICONOS_TRAZA
++    tz_.push_back(x);
++    tz_.push_back(y);
++#endif
++  }
++  void lt(double x, double y) {
++    cairo_line_to(c, x, y);
++#ifdef ICONOS_TRAZA
++    tz_.push_back(x);
++    tz_.push_back(y);
++#endif
++  }
++  void close() { cairo_close_path(c); }
++  void stroke() {
++#ifdef ICONOS_TRAZA
++    traza("S", ss, lw);
++#endif
++    cairo_set_source_rgba(c, ss.r, ss.g, ss.b, lim01(ga));
++    cairo_set_line_width(c, lw > 0.05 ? lw : 0.05);
++    cairo_stroke(c);
++  }
++  void fill() {
++#ifdef ICONOS_TRAZA
++    traza("F", fs, 0);
++#endif
++    cairo_set_source_rgba(c, fs.r, fs.g, fs.b, lim01(ga));
++    cairo_fill(c);
++  }
++  void ambos(const Col& k) { ss = fs = k; }
++};
++
++using Tr = std::function<P(const P&)>;
++
++inline P rY(const P& p, double a) {
++  const double c = std::cos(a), s = std::sin(a);
++  return {p[0] * c + p[2] * s, p[1], -p[0] * s + p[2] * c};
++}
++inline P rX(const P& p, double a) {
++  const double c = std::cos(a), s = std::sin(a);
++  return {p[0], p[1] * c - p[2] * s, p[1] * s + p[2] * c};
++}
++inline P rZ(const P& p, double a) {
++  const double c = std::cos(a), s = std::sin(a);
++  return {p[0] * c - p[1] * s, p[0] * s + p[1] * c, p[2]};
++}
++inline P pr(const P& p, double ox = 0.0, double oy = 0.0) {
++  double den = F - p[2];
++  if (den < 1.0) den = 1.0;
++  const double k = F / den;
++  return {C + ox + p[0] * k, C + oy + p[1] * k, p[2]};
++}
++inline double aZ(double z, double rad) {
++  const double v = 0.6 + 0.4 * z / rad;
++  return v < 0.2 ? 0.2 : (v > 1.0 ? 1.0 : v);
++}
++inline double suave(double u) {
++  u = lim01(u);
++  return u * u * (3.0 - 2.0 * u);
++}
++inline void seg(X& x, const P& a, const P& b, double rad, double al = 1.0) {
++  x.ga = al * aZ((a[2] + b[2]) / 2.0, rad);
++  x.begin();
++  x.mt(a[0], a[1]);
++  x.lt(b[0], b[1]);
++  x.stroke();
++}
++inline void poli(X& x, const std::vector<P>& pts, double rad, double al, bool cerrar) {
++  const size_t n = pts.size();
++  if (n < 2) return;
++  const size_t m = cerrar ? n : n - 1;
++  for (size_t i = 0; i < m; i++) seg(x, pts[i], pts[(i + 1) % n], rad, al);
++}
++inline void relleno(X& x, const std::vector<P>& pts, double al) {
++  if (pts.empty()) return;
++  x.ga = al;
++  x.begin();
++  for (const auto& p : pts) x.lt(p[0], p[1]);
++  x.close();
++  x.fill();
++}
++inline void circ(X& x, double cx, double cy, double r, bool fill = false) {
++  x.begin();
++  cairo_arc(x.c, cx, cy, r > 0.01 ? r : 0.01, 0, TAU);
++#ifdef ICONOS_TRAZA
++  x.tz_ = {cx, cy, r > 0.01 ? r : 0.01};
++#endif
++  if (fill) {
++    x.fill();
++  } else {
++    x.stroke();
++  }
++}
++inline void linea(X& x, double a, double b, double c, double d) {
++  x.begin();
++  x.mt(a, b);
++  x.lt(c, d);
++  x.stroke();
++}
++inline void hex(X& x, const Col& col) {
++  x.ss = col;
++  x.lw = 3;
++  x.ga = 1;
++  x.begin();
++  for (int i = 0; i < 6; i++) {
++    const double a = -PI / 2 + i * TAU / 6;
++    x.lt(C + R * std::cos(a), C + R * std::sin(a));
++  }
++  x.close();
++  x.stroke();
++}
++inline std::vector<P> anillo(double r, int n, const Tr& T) {
++  std::vector<P> o;
++  o.reserve(n);
++  for (int i = 0; i < n; i++) {
++    const double a = i * TAU / n;
++    o.push_back(T({r * std::cos(a), r * std::sin(a), 0}));
++  }
++  return o;
++}
++
++// (Version anterior, sin uso desde 2026-11-19) PRISMA HEXAGONAL con piramide y esfera.
++[[maybe_unused]] inline void logo3d(X& x, double m, double ay, double ax, double at, double dest) {
++  const double g = 11, sc = 1 - .12 * m, RT = 15.7, st = 1 - .2 * m, rad = 30;
++  auto T = [&](const P& p) -> P {
++    const P q = rX(rY({p[0] * sc, p[1] * sc, p[2] * sc * m}, ay), ax);
++    double den = F - q[2];
++    if (den < 1.0) den = 1.0;
++    const double k = 1 + m * (F / den - 1);
++    return {C + q[0] * k, C + q[1] * k, q[2]};
++  };
++  struct S {
++    P a, b;
++    Col col;
++    double w, al;
++    bool fijo;
++  };
++  std::vector<S> ss;
++  ss.reserve(27);
++  std::array<std::array<double, 2>, 6> V;
++  for (int i = 0; i < 6; i++) {
++    const double a = -PI / 2 + i * TAU / 6;
++    V[i] = {R * std::cos(a), R * std::sin(a)};
++  }
++  const double fz = T({0, 0, g})[2] >= T({0, 0, -g})[2] ? 1 : -1;
++  for (int i = 0; i < 6; i++) {
++    const auto& a = V[i];
++    const auto& b = V[(i + 1) % 6];
++    ss.push_back({T({a[0], a[1], g * fz}), T({b[0], b[1], g * fz}), x.pal.azul, 3 - .4 * m, 1, true});
++    ss.push_back({T({a[0], a[1], -g * fz}), T({b[0], b[1], -g * fz}), x.pal.azul, 2, .55 * m, false});
++    ss.push_back({T({a[0], a[1], g}), T({a[0], a[1], -g}), x.pal.azul, 1.8, .85 * m, false});
++  }
++  auto tet = [&](const P& p) -> P { return rY({p[0] * st, p[1] * st, p[2] * st}, at); };
++  std::array<P, 3> B;
++  const P ap = tet({0, 0, 16.65});
++  for (int i = 0; i < 3; i++) {
++    const double a = -PI / 2 + i * TAU / 3;
++    B[i] = tet({RT * std::cos(a), RT * std::sin(a), -5.55});
++  }
++  for (int i = 0; i < 3; i++) {
++    ss.push_back({T(B[i]), T(B[(i + 1) % 3]), x.pal.verde, 2.4, 1, false});
++    ss.push_back({T(B[i]), T(ap), x.pal.verde, 2, m, false});
++    ss.push_back({T(B[i]), T({V[i * 2][0], V[i * 2][1], 0}), x.pal.verde, 2.4 - .6 * m, 1 - .25 * m, false});
++  }
++  std::stable_sort(ss.begin(), ss.end(), [](const S& p, const S& q) {
++    return (p.a[2] + p.b[2]) < (q.a[2] + q.b[2]);
++  });
++  auto pinta = [&](const S& s) {
++    x.ss = s.col;
++    x.lw = s.w;
++    x.ga = s.al * (s.fijo ? 1 : (1 - m) + m * aZ((s.a[2] + s.b[2]) / 2, rad));
++    x.begin();
++    x.mt(s.a[0], s.a[1]);
++    x.lt(s.b[0], s.b[1]);
++    x.stroke();
++  };
++  size_t k = 0;
++  for (; k < ss.size() && ss[k].a[2] + ss[k].b[2] < 0; k++) pinta(ss[k]);
++  const double re = 1.9 + 1.3 * m + dest;
++  x.fs = x.pal.verde;
++  x.ga = .38 * m;
++  circ(x, C, C, re, true);
++  x.ga = 1;
++  x.ss = x.pal.verde;
++  x.lw = 1.6;
++  circ(x, C, C, re);
++  x.fs = x.pal.blanco;
++  x.ga = .9 * m;
++  circ(x, C - re * .32, C - re * .34, re * .26, true);
++  for (; k < ss.size(); k++) pinta(ss[k]);
++  x.ga = 1;
++}
++
++struct Perfil {
++  double s, rad;
++  Col col;
++};
++
++// Herramienta de revolucion (lapiz, pincel).
++inline void util(X& x, double tx, double ty, const std::vector<Perfil>& perfil, int n, double giro,
++                 double lz, double lx) {
++  const size_t np = perfil.size();
++  std::vector<std::vector<P>> Pm(np);
++  std::vector<P> eje(np);
++  for (size_t j = 0; j < np; j++) {
++    Pm[j].reserve(n);
++    for (int k = 0; k < n; k++) {
++      const double a = giro + k * TAU / n;
++      Pm[j].push_back(pr(rX(rZ({perfil[j].rad * std::cos(a), -perfil[j].s, perfil[j].rad * std::sin(a)}, lz), lx), tx, ty));
++    }
++    eje[j] = pr(rX(rZ({0, -perfil[j].s, 0}, lz), lx), tx, ty);
++  }
++  for (int pase = 0; pase < 2; pase++) {
++    const bool frente = pase == 1;
++    for (size_t j = 0; j < np; j++) {
++      x.ambos(perfil[j].col);
++      for (int k = 0; k < n; k++) {
++        const P& a = Pm[j][k];
++        const P& b = Pm[j][(k + 1) % n];
++        const bool del = (a[2] + b[2]) / 2 > eje[j][2];
++        if (del != frente) continue;
++        if (j + 1 < np) {
++          const P& c = Pm[j + 1][(k + 1) % n];
++          const P& d = Pm[j + 1][k];
++          if (frente) relleno(x, {a, b, c, d}, .16);
++          x.ga = frente ? 1 : .22;
++          x.begin();
++          x.mt(a[0], a[1]);
++          x.lt(d[0], d[1]);
++          x.stroke();
++        }
++        if (perfil[j].rad > .6) {
++          x.ga = frente ? .9 : .2;
++          x.begin();
++          x.mt(a[0], a[1]);
++          x.lt(b[0], b[1]);
++          x.stroke();
++        }
++      }
++    }
++  }
++  x.ga = 1;
++}
++
++// Placa extruida: contorno 2D con grosor, pasada por T.
++inline void placa(X& x, const std::vector<std::array<double, 2>>& pts, double g, const Tr& T,
++                  double rad, bool cerrar, double wf, double wa) {
++  std::vector<P> A, B;
++  for (const auto& p : pts) {
++    A.push_back(T({p[0], p[1], g}));
++    B.push_back(T({p[0], p[1], -g}));
++  }
++  if (A.size() < 2) return;
++  const bool delante = A[0][2] + A[1][2] > B[0][2] + B[1][2];
++  const auto& f = delante ? A : B;
++  const auto& a = delante ? B : A;
++  x.lw = wa;
++  poli(x, a, rad, .45, cerrar);
++  for (size_t i = 0; i < pts.size(); i++) seg(x, A[i], B[i], rad, .5);
++  x.lw = wf;
++  x.ga = 1;
++  x.begin();
++  for (const auto& p : f) x.lt(p[0], p[1]);
++  if (cerrar) x.close();
++  x.stroke();
++}
++
++inline void engranaje(X& x, double ox, double oy, double r, int n, double ang, const Tr& T) {
++  std::vector<std::array<double, 2>> pts;
++  for (int i = 0; i < n * 2; i++) {
++    const double rr = (i % 2) ? r : r * .72;
++    const double a0 = ang + (i - .25) * TAU / (n * 2), a1 = ang + (i + .25) * TAU / (n * 2);
++    pts.push_back({ox + rr * std::cos(a0), oy + rr * std::sin(a0)});
++    pts.push_back({ox + rr * std::cos(a1), oy + rr * std::sin(a1)});
++  }
++  std::vector<P> A, B;
++  for (const auto& p : pts) {
++    A.push_back(T({p[0], p[1], 1.8}));
++    B.push_back(T({p[0], p[1], -1.8}));
++  }
++  x.lw = 1.2;
++  poli(x, B, 20, .4, true);
++  for (size_t i = 1; i < pts.size(); i += 2) seg(x, A[i], B[i], 20, .45);
++  x.lw = 2;
++  poli(x, A, 20, 1, true);
++  x.lw = 1.6;
++  poli(x, anillo(r * .28, 10, [&](const P& p) { return T({p[0] + ox, p[1] + oy, 1.8}); }), 20, 1, true);
++  x.ga = 1;
++}
++
++// ── EL LOGO Y SUS VARIANTES (2026-11-19, iconos-dibujo.js / iconos-hexagono-5.html) ──
++// El logo es el ICOSAEDRO visto por una cara. Aqui viven TODAS las variantes
++// que el usuario pidio guardar: logo-3d, logo-3d-b, reposo, reposo-b,
++// transmutacion, teseracto-a, teseracto-b, teseracto-c y reposo-t.
++// Cual sale en reposo y cual al arrancar lo elige icono-estado.sh leyendo
++// ~/.config/waybar/icono-logo.conf (sin recompilar).
++struct Solido {
++  std::vector<P> V;
++  std::vector<std::array<int, 2>> E;
++};
++inline double hyp3(const P& p) { return std::hypot(p[0], p[1], p[2]); }
++inline double mez(double a, double b, double s) { return a + (b - a) * s; }
++
++// Vertices en la esfera unidad + aristas (pares a distancia minima).
++inline Solido solido(std::vector<P> V) {
++  Solido o;
++  double rm = 0;
++  for (const auto& p : V) rm = std::max(rm, hyp3(p));
++  if (!(rm > 1e-9)) rm = 1;
++  for (auto& p : V) p = {p[0] / rm, p[1] / rm, p[2] / rm};
++  auto ds = [](const P& p, const P& q) { return std::hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]); };
++  double d = 9;
++  for (size_t i = 0; i < V.size(); i++)
++    for (size_t j = i + 1; j < V.size(); j++) d = std::min(d, ds(V[i], V[j]));
++  for (size_t i = 0; i < V.size(); i++)
++    for (size_t j = i + 1; j < V.size(); j++)
++      if (ds(V[i], V[j]) < d * 1.01) o.E.push_back({static_cast<int>(i), static_cast<int>(j)});
++  o.V = std::move(V);
++  return o;
++}
++// Gira el solido: n mira a quien ve (+z), 'arriba' hacia arriba en pantalla (-y).
++inline Solido orienta(const Solido& S, P n, const P& arriba) {
++  Solido o;
++  o.E = S.E;
++  double nn = hyp3(n);
++  if (!(nn > 1e-9)) nn = 1;
++  n = {n[0] / nn, n[1] / nn, n[2] / nn};
++  const double pe = arriba[0] * n[0] + arriba[1] * n[1] + arriba[2] * n[2];
++  P u = {arriba[0] - pe * n[0], arriba[1] - pe * n[1], arriba[2] - pe * n[2]};
++  double un = hyp3(u);
++  if (!(un > 1e-9)) un = 1;
++  u = {u[0] / un, u[1] / un, u[2] / un};
++  const P e = {n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]};
++  o.V.reserve(S.V.size());
++  for (const auto& p : S.V) {
++    o.V.push_back({p[0] * e[0] + p[1] * e[1] + p[2] * e[2], -(p[0] * u[0] + p[1] * u[1] + p[2] * u[2]),
++                   p[0] * n[0] + p[1] * n[1] + p[2] * n[2]});
++  }
++  return o;
++}
++inline void cic(std::vector<P>& V, double a, double b, double c) {
++  V.push_back({a, b, c});
++  V.push_back({c, a, b});
++  V.push_back({b, c, a});
++}
++
++struct Ico {
++  Solido s;
++  std::vector<int> N;  // capa por profundidad: 3 delante, 2 y 1 cinturon, 0 atras
++  std::vector<int> K;  // clase de arista: 0 hexagono, 1 triangulo, 2 radio, 3 resto
++  double S = 1.0;      // escala: el cinturon cae en el hexagono de radio R
++  double RB = 1.0;     // radio (unidad) del cinturon = hexagono
++  double tri = 0.5;    // radio (unidad) del triangulo de delante
++  std::array<std::array<int, 12>, 12> EI{};  // (i,j) -> indice de arista, -1 si no hay
++  std::array<std::array<int, 12>, 6> G{};    // simetria S6: sitio del vertice i tras k medias vueltas 4D
++  int clase(int i, int j) const {
++    if (i < 0 || j < 0 || i > 11 || j > 11) return 3;
++    const int n = EI[i][j];
++    return (n < 0 || n >= static_cast<int>(K.size())) ? 3 : K[n];
++  }
++};
++inline const Ico& icosaedro() {
++  static const Ico ICO = [] {
++    Ico o;
++    const double FI = (1 + std::sqrt(5.0)) / 2;
++    std::vector<P> V;
++    for (double a : {1.0, -1.0})
++      for (double b : {1.0, -1.0}) cic(V, 0, a, b * FI);
++    o.s = orienta(solido(V), {FI, 0, 2 * FI + 1}, {0, 1, FI});
++    int cint = -1, del = -1;
++    for (size_t i = 0; i < o.s.V.size(); i++) {
++      const double z = o.s.V[i][2];
++      const int c = z > .6 ? 3 : z > 0 ? 2 : z > -.6 ? 1 : 0;
++      o.N.push_back(c);
++      if (c == 2 && cint < 0) cint = static_cast<int>(i);
++      if (c == 3 && del < 0) del = static_cast<int>(i);
++    }
++    for (auto& f : o.EI) f.fill(-1);
++    for (size_t n = 0; n < o.s.E.size(); n++) {
++      const int i = o.s.E[n][0], j = o.s.E[n][1];
++      const int a = std::max(o.N[i], o.N[j]), b = std::min(o.N[i], o.N[j]);
++      o.K.push_back(a == 2 && b == 1 ? 0 : a == 3 && b == 3 ? 1 : a == 3 && b == 1 ? 2 : 3);
++      if (i < 12 && j < 12) o.EI[i][j] = o.EI[j][i] = static_cast<int>(n);
++    }
++    double rc = cint >= 0 ? std::hypot(o.s.V[cint][0], o.s.V[cint][1]) : 1.0;
++    if (!(rc > 1e-6)) rc = 1.0;
++    o.S = R / rc;
++    o.RB = rc;
++    o.tri = del >= 0 ? std::hypot(o.s.V[del][0], o.s.V[del][1]) / rc : 0.5;
++    // girar 60 grados en pantalla y reflejar la profundidad deja el icosaedro igual
++    std::array<int, 12> g{};
++    const size_t nv = std::min<size_t>(12, o.s.V.size());
++    for (size_t i = 0; i < nv; i++) {
++      P q = rZ(o.s.V[i], TAU / 6);
++      q[2] = -q[2];
++      int b = 0;
++      double d = 9;
++      for (size_t k = 0; k < nv; k++) {
++        const P& r = o.s.V[k];
++        const double e = std::hypot(r[0] - q[0], r[1] - q[1], r[2] - q[2]);
++        if (e < d) {
++          d = e;
++          b = static_cast<int>(k);
++        }
++      }
++      g[i] = b;
++    }
++    for (int i = 0; i < 12; i++) o.G[0][i] = i;
++    for (int k = 1; k < 6; k++)
++      for (int i = 0; i < 12; i++) o.G[k][i] = g[o.G[k - 1][i]];
++    return o;
++  }();
++  return ICO;
++}
++
++// Dodecaedro visto por un vertice (eje de orden 3): su silueta es la mas parecida al hexagono.
++struct Dod {
++  Solido s;
++  std::vector<int> N;  // vertices del eje (delante y detras)
++  double S = 1.0;
++};
++inline const Dod& dodecaedro() {
++  static const Dod DOD = [] {
++    Dod o;
++    const double FI = (1 + std::sqrt(5.0)) / 2;
++    std::vector<P> V;
++    for (double a : {1.0, -1.0})
++      for (double b : {1.0, -1.0})
++        for (double c : {1.0, -1.0}) V.push_back({a, b, c});
++    for (double a : {1.0, -1.0})
++      for (double b : {1.0, -1.0}) cic(V, 0, a / FI, b * FI);
++    o.s = orienta(solido(V), {1, 1, 1}, {0, 1 / FI, FI});
++    double mx = 0;
++    for (const auto& p : o.s.V) {
++      o.N.push_back(std::abs(p[2]) > .9 ? 1 : 0);
++      mx = std::max(mx, std::hypot(p[0], p[1]));
++    }
++    if (!(mx > 1e-6)) mx = 1;
++    o.S = 27.5 / mx;
++    return o;
++  }();
++  return DOD;
++}
++inline const Solido& tetraedro() {
++  static const Solido S = solido({{1, 1, 1}, {1, -1, -1}, {-1, 1, -1}, {-1, -1, 1}});
++  return S;
++}
++inline const Solido& cubo() {
++  static const Solido S = [] {
++    std::vector<P> V;
++    for (double a : {1.0, -1.0})
++      for (double b : {1.0, -1.0})
++        for (double c : {1.0, -1.0}) V.push_back({a, b, c});
++    return solido(V);
++  }();
++  return S;
++}
++inline const Solido& octaedro() {
++  static const Solido S = [] {
++    std::vector<P> V;
++    cic(V, 1, 0, 0);
++    cic(V, -1, 0, 0);
++    return solido(V);
++  }();
++  return S;
++}
++
++inline void esferita(X& x, double re, double m, const Col& col) {
++  x.fs = col;
++  x.ga = .38 * m;
++  circ(x, C, C, re, true);
++  x.ga = std::max(m, 0.0);
++  x.ss = col;
++  x.lw = 1.6;
++  circ(x, C, C, re);
++  x.fs = x.pal.blanco;
++  x.ga = .9 * m * m;
++  circ(x, C - re * .32, C - re * .34, re * .26, true);
++}
++
++// Trazo con profundidad: a, b proyectados (z = profundidad), color, grosor, alfa.
++struct Tz {
++  P a, b;
++  Col col;
++  double w, al;
++};
++// Pinta los trazos de atras, luego pre() (la esferita), luego los de delante.
++template <typename Pre>
++inline void trazos(X& x, std::vector<Tz>& S, Pre pre) {
++  std::stable_sort(S.begin(), S.end(), [](const Tz& p, const Tz& q) { return (p.a[2] + p.b[2]) < (q.a[2] + q.b[2]); });
++  auto una = [&](const Tz& s) {
++    if (!(s.al >= .02)) return;  // tambien atrapa NaN
++    x.ss = s.col;
++    x.lw = s.w;
++    x.ga = std::min(1.0, s.al);
++    x.begin();
++    x.mt(s.a[0], s.a[1]);
++    x.lt(s.b[0], s.b[1]);
++    x.stroke();
++  };
++  size_t k = 0;
++  for (; k < S.size() && S[k].a[2] + S[k].b[2] < 0; k++) una(S[k]);
++  pre();
++  for (; k < S.size(); k++) una(S[k]);
++  x.ga = 1;
++}
++// Perspectiva con guarda: F / (F - z), nunca con denominador < 1.
++inline double kF(double z) {
++  double den = F - z;
++  if (!(den > 1.0)) den = 1.0;
++  return F / den;
++}
++
++// m: 0 logo plano exacto, 1 solido con volumen. ex: fuerza de las aristas
++// que el logo no dibuja. al: alfa global.
++inline void ico(X& x, double m, double ay, double ax, double dest, double ex, double al = 1.0) {
++  if (!(al >= .02)) return;
++  const Ico& I = icosaedro();
++  const double sc = I.S * (1 - .13 * m), rad = 26;
++  const bool ch = x.chico;
++  std::vector<P> Pv;
++  Pv.reserve(I.s.V.size());
++  for (const auto& p : I.s.V) {
++    const P q = rX(rY({p[0] * sc, p[1] * sc, p[2] * sc}, ay), ax);
++    const double k = 1 + m * (kF(q[2]) - 1);
++    Pv.push_back({C + q[0] * k, C + q[1] * k, q[2]});
++  }
++  std::vector<Tz> ss;
++  ss.reserve(I.s.E.size());
++  for (size_t n = 0; n < I.s.E.size(); n++) {
++    const P& pa = Pv[I.s.E[n][0]];
++    const P& pb = Pv[I.s.E[n][1]];
++    const int c = I.K[n];
++    const double z = (pa[2] + pb[2]) / 2, atras = z < -2 ? m : 0;
++    double a = (1 - m) + m * aZ(z, rad);
++    if (c == 3) {
++      a *= ex * m * (ch ? .6 : 1) * (1 - atras * (ch ? 1 : .35));
++    } else {
++      a *= 1 - atras * (ch ? .72 : .15);
++    }
++    ss.push_back({pa, pb, c == 0 ? x.pal.azul : x.pal.verde,
++                  c == 0 ? 3 - .7 * m : c == 3 ? (ch ? 1.9 : 1.5) : 2.4 - .4 * m, a * al});
++  }
++  trazos(x, ss, [&] { esferita(x, 1.9 + 1.4 * m + dest, m * al, x.pal.verde); });
++  if (m < 1) {
++    x.ga = (1 - m) * al;
++    x.ss = x.pal.verde;
++    x.lw = 1.6;
++    circ(x, C, C, 1.9 + 1.4 * m);
++    x.ga = 1;
++  }
++}
++
++// DODECAEDRO de cristal (eter). a: aparicion 0..1.
++inline void dode(X& x, double a, double ay, double ax, double dest) {
++  if (!(a >= .02)) return;
++  const Dod& D = dodecaedro();
++  const double sc = D.S * (.8 + .2 * a) * .93, rad = 26;
++  std::vector<P> Pv;
++  Pv.reserve(D.s.V.size());
++  for (const auto& p : D.s.V) Pv.push_back(pr(rX(rY({p[0] * sc, p[1] * sc, p[2] * sc}, ay), ax)));
++  std::vector<Tz> ss;
++  ss.reserve(D.s.E.size());
++  for (const auto& e : D.s.E) {
++    const P& pa = Pv[e[0]];
++    const P& pb = Pv[e[1]];
++    const double z = (pa[2] + pb[2]) / 2;
++    const bool eje = D.N[e[0]] || D.N[e[1]];
++    ss.push_back({pa, pb, eje ? x.pal.verde : x.pal.azul, z < -2 ? 1.5 : 2.3,
++                  a * aZ(z, rad) * (z < -2 ? (x.chico ? .18 : .6) : 1)});
++  }
++  trazos(x, ss, [&] { esferita(x, 3.3 + dest, a, x.pal.verde); });
++}
++
++// Solido cualquiera girando (para la transmutacion por los cinco elementos).
++inline void alambre(X& x, const Solido& So, double sc, double ay, double ax, double al, const Col& col) {
++  if (!(al >= .02) || !(sc > 0.01)) return;
++  const double rad = sc;
++  std::vector<P> Pv;
++  Pv.reserve(So.V.size());
++  for (const auto& p : So.V) Pv.push_back(pr(rX(rY({p[0] * sc, p[1] * sc, p[2] * sc}, ay), ax)));
++  std::vector<Tz> ss;
++  ss.reserve(So.E.size());
++  for (const auto& e : So.E) {
++    const P& pa = Pv[e[0]];
++    const P& pb = Pv[e[1]];
++    const double z = (pa[2] + pb[2]) / 2;
++    ss.push_back({pa, pb, z < -1 ? x.pal.azul : x.pal.verde, z < -1 ? 1.5 : 2.3,
++                  al * aZ(z, rad) * (z < -1 ? (x.chico ? .2 : .65) : 1)});
++  }
++  trazos(x, ss, [&] { esferita(x, 3.2, al, col); });
++}
++
++inline void destello(X& x, double f, double g) {
++  if (!(f > 0) || !(f < 1)) return;
++  x.ss = x.pal.blanco;
++  x.lw = 1.2;
++  x.ga = .7 * std::sin(PI * f);
++  circ(x, C, C, 5 + 25 * g);
++  for (int i = 0; i < 6; i++) {
++    const double a = i * TAU / 6 + g * 1.2, r0 = 8 + 20 * g;
++    linea(x, C + r0 * std::cos(a), C + r0 * std::sin(a), C + (r0 + 3) * std::cos(a), C + (r0 + 3) * std::sin(a));
++  }
++  x.ga = 1;
++}
++
++// ── TESERACTO: figuras de cuatro dimensiones (x, y, z, w) ──
++// Se gira en un plano que incluye el eje w, se proyecta 4D -> 3D con
++// perspectiva (lo que esta "mas cerca en w" se ve mas grande: por eso una
++// figura queda dentro de otra) y luego 3D -> 2D como el resto.
++constexpr double D4 = 3.0;  // distancia de la camara 4D
++inline double k4D(double dist, double w) {
++  double den = dist - w;
++  if (!(den > 0.2)) den = 0.2;
++  return dist / den;
++}
++// Esferita del centro (y el punto plano del logo cuando m < 1).
++inline void centro(X& x, double m, double dest, double al) {
++  esferita(x, 1.9 + 1.4 * m + dest, m * al, x.pal.verde);
++  if (m < 1) {
++    x.ga = (1 - m) * al;
++    x.ss = x.pal.verde;
++    x.lw = 1.6;
++    circ(x, C, C, 1.9 + 1.4 * m);
++    x.ga = 1;
++  }
++}
++
++// A · PRISMA ICOSAEDRICO (icosaedro x segmento): dos icosaedros, uno en
++// w=+1 (fuera) y otro en w=-1 (dentro), con los vertices unidos. Cada media
++// vuelta (a = pi) el de dentro ha pasado a ser el de fuera.
++// m: 0 logo plano, 1 volumen · e: presencia del interior · osc: sin giro en pantalla.
++inline void prisma(X& x, double m, double e, double a, double ay, double ax, double dest, bool osc) {
++  const Ico& I = icosaedro();
++  if (I.s.V.size() != 12) return;
++  const double hv = a / PI;
++  const double kf = std::floor(hv + 1e-9);
++  const double s = suave((hv - kf - .2) / .6);
++  int k0 = 0;
++  if (!osc && std::isfinite(kf)) {
++    k0 = static_cast<int>(std::fmod(kf, 6.0));
++    k0 = ((k0 % 6) + 6) % 6;
++  }
++  const int k1 = (k0 + 1) % 6;
++  const double ca = std::cos(a), sa = std::sin(a), gz = osc ? 0 : a / 3;
++  std::array<P, 24> Q;
++  std::array<double, 24> Wv;
++  double rmax = 0;
++  int q = 0;
++  for (double c : {1.0, -1.0}) {
++    for (int n = 0; n < 12; n++, q++) {
++      const P p = rZ(I.s.V[n], gz);
++      const double z = p[2] * ca - c * sa, w = p[2] * sa + c * ca, k4 = k4D(D4, w);
++      Q[q] = {p[0] * k4, p[1] * k4, z * k4};
++      Wv[q] = w;
++      if (I.N[n] == 1 || I.N[n] == 2) rmax = std::max(rmax, std::hypot(p[0], p[1]) * k4);
++    }
++  }
++  if (!(rmax > 1e-6)) return;
++  const double S = R * (1 - .13 * m) / rmax, ei = mez(.12, 1, e);
++  std::array<P, 24> Pv;
++  for (int n = 0; n < 24; n++) {
++    const double f = n >= 12 ? ei : 1;
++    const P r = rX(rY({Q[n][0] * S * f, Q[n][1] * S * f, Q[n][2] * S * f}, ay), ax);
++    const double kk = 1 + m * (kF(r[2]) - 1);
++    Pv[n] = {C + r[0] * kk, C + r[1] * kk, r[2]};
++  }
++  auto prof = [&](double z) {
++    double v = .68 + .32 * z / 26;
++    v = v < .3 ? .3 : (v > 1 ? 1 : v);
++    return (1 - m) + m * v;
++  };
++  std::vector<Tz> L;
++  L.reserve(72);
++  for (int c = 0; c < 2; c++) {
++    for (const auto& ed : I.s.E) {
++      const int i = ed[0], j = ed[1];
++      const P& A = Pv[c * 12 + i];
++      const P& B = Pv[c * 12 + j];
++      const double o = lim01(.5 + .5 * (Wv[c * 12 + i] + Wv[c * 12 + j]) / 2), pe = c ? e : 1;
++      const int cA = I.clase(I.G[k0][i], I.G[k0][j]), cB = I.clase(I.G[k1][i], I.G[k1][j]);
++      const bool cin = cA == 0;
++      const double lg = osc ? (cA < 3 ? 1 : 0) : mez(cA < 3 ? 1 : 0, cB < 3 ? 1 : 0, s);
++      const double z = (A[2] + B[2]) / 2;
++      double al, an;
++      if (x.chico) {  // en la barra: fuera, el logo entero; dentro, solo se insinua
++        al = (cin ? 1 : lg) * suave((o - .36) / .28) + (cin ? .42 : 0) * suave((.5 - o) / .3) * m;
++        an = (cin ? 3 - .5 * m : 2.5) * mez(.75, 1, o);
++      } else {
++        al = (cin ? 1 : mez(.5 * m * mez(.3, 1, o), 1, lg)) * mez(.62, 1, o) * prof(z);
++        an = (cin ? 3 - .7 * m : mez(1.4, 2.4 - .4 * m, lg)) * mez(.62, 1, o);
++      }
++      L.push_back({A, B, cin ? x.pal.azul : x.pal.verde, an, al * pe});
++    }
++  }
++  if (!x.chico) {
++    for (int i = 0; i < 12; i++) {
++      const P& A = Pv[i];
++      const P& B = Pv[12 + i];
++      L.push_back({A, B, x.pal.blanco, 1, .34 * e * m * prof((A[2] + B[2]) / 2)});
++    }
++  }
++  trazos(x, L, [&] { centro(x, m, dest, 1); });
++}
++
++// B · DUALES: icosaedro y su dual, el dodecaedro (un vertice por cada cara
++// del icosaedro), girando en sentidos opuestos; al girar en 4D se cruzan y
++// cambian de sitio.
++struct Dual {
++  std::vector<P> V;
++  std::vector<std::array<int, 2>> E;
++  std::vector<int> eje;
++  double rd = 1.0;
++};
++inline const Dual& dual() {
++  static const Dual DU = [] {
++    Dual o;
++    const Ico& I = icosaedro();
++    const int nv = static_cast<int>(std::min<size_t>(12, I.s.V.size()));
++    std::vector<std::array<int, 3>> Fc;
++    for (int i = 0; i < nv; i++)
++      for (int j = i + 1; j < nv; j++)
++        for (int k = j + 1; k < nv; k++)
++          if (I.EI[i][j] >= 0 && I.EI[j][k] >= 0 && I.EI[i][k] >= 0) {
++            P p = {I.s.V[i][0] + I.s.V[j][0] + I.s.V[k][0], I.s.V[i][1] + I.s.V[j][1] + I.s.V[k][1],
++                   I.s.V[i][2] + I.s.V[j][2] + I.s.V[k][2]};
++            double l = hyp3(p);
++            if (!(l > 1e-9)) l = 1;
++            o.V.push_back({p[0] / l, p[1] / l, p[2] / l});
++            Fc.push_back({i, j, k});
++          }
++    for (size_t a = 0; a < Fc.size(); a++)
++      for (size_t b = a + 1; b < Fc.size(); b++) {
++        int com = 0;
++        for (int u : Fc[a])
++          for (int v : Fc[b])
++            if (u == v) com++;
++        if (com == 2) o.E.push_back({static_cast<int>(a), static_cast<int>(b)});
++      }
++    double mx = 0;
++    for (const auto& p : o.V) {
++      o.eje.push_back(std::abs(p[2]) > .9 ? 1 : 0);
++      mx = std::max(mx, std::hypot(p[0], p[1]));
++    }
++    o.rd = mx > 1e-6 ? mx : 1.0;
++    return o;
++  }();
++  return DU;
++}
++constexpr double DUAL_K = .9106;  // al cruzarse, las aristas de uno cortan justo las del otro
++inline void duales(X& x, double m, double e, double a, double th, double ay, double ax, double dest) {
++  const Ico& I = icosaedro();
++  const Dual& DU = dual();
++  const double w = std::cos(a), kI = k4D(D4, w), kD = k4D(D4, -w) * DUAL_K * mez(.15, 1, e);
++  const double oI = lim01(.5 + .5 * w), oD = 1 - oI;
++  const double den = std::max(kI * I.RB, kD * DU.rd * 1.02);
++  if (!(den > 1e-6)) return;
++  const double S = R * (1 - .13 * m) / den;
++  auto pro = [&](const P& p, double g, double k) -> P {
++    const P q = rZ(p, g);
++    const P r = rX(rY({q[0] * k * S, q[1] * k * S, q[2] * k * S}, ay), ax);
++    const double kk = 1 + m * (kF(r[2]) - 1);
++    return {C + r[0] * kk, C + r[1] * kk, r[2]};
++  };
++  auto prof = [&](double z) {
++    double v = .68 + .32 * z / 26;
++    v = v < .3 ? .3 : (v > 1 ? 1 : v);
++    return (1 - m) + m * v;
++  };
++  std::vector<P> PI_, PD;
++  PI_.reserve(I.s.V.size());
++  PD.reserve(DU.V.size());
++  for (const auto& p : I.s.V) PI_.push_back(pro(p, th, kI));
++  for (const auto& p : DU.V) PD.push_back(pro(p, -th, kD));
++  std::vector<Tz> L;
++  L.reserve(I.s.E.size() + DU.E.size());
++  for (size_t n = 0; n < I.s.E.size(); n++) {
++    const int c = I.K[n];
++    const P& A = PI_[I.s.E[n][0]];
++    const P& B = PI_[I.s.E[n][1]];
++    const double z = (A[2] + B[2]) / 2;
++    double al, an;
++    if (x.chico) {
++      al = c == 3 ? 0 : mez(c == 0 ? .5 : .75, 1, oI);
++      an = (c == 0 ? 3 - .5 * m : 2.5) * mez(.8, 1, oI);
++    } else {
++      al = (c == 3 ? .5 * m : 1) * mez(.7, 1, oI) * prof(z);
++      an = (c == 0 ? 3 - .7 * m : c == 3 ? 1.4 : 2.4 - .4 * m) * mez(.66, 1, oI);
++    }
++    L.push_back({A, B, c == 0 ? x.pal.azul : x.pal.verde, an, al});
++  }
++  for (const auto& ed : DU.E) {
++    const P& A = PD[ed[0]];
++    const P& B = PD[ed[1]];
++    const double z = (A[2] + B[2]) / 2;
++    const bool ej = DU.eje[ed[0]] || DU.eje[ed[1]];
++    double al, an;
++    if (x.chico) {
++      al = z < -1 ? 0 : mez(.42, .85, oD);
++      an = mez(1.7, 2.6, oD);
++    } else {
++      al = mez(.62, 1, oD) * prof(z) * (z < -1 ? .6 : 1);
++      an = mez(1.25, 2.3, oD) * (z < -1 ? .8 : 1);
++    }
++    L.push_back({A, B, ej ? x.pal.blanco : x.pal.rosa, an, al * e * m});
++  }
++  trazos(x, L, [&] { centro(x, m, dest, 1); });
++}
++
++// C · 5-CELDA RECTIFICADA: politopo 4D de verdad (10 vertices, 30 aristas).
++// Vista por su eje de orden 3 y con perspectiva, 12 de sus 30 aristas dibujan
++// EXACTAMENTE el logo. Al girar en el plano z-w se da la vuelta: el hexagono
++// con el triangulo dentro pasa a ser un triangulo con el hexagono dentro.
++struct R5c {
++  std::vector<std::array<double, 4>> V;
++  std::vector<std::array<int, 2>> E;
++  std::vector<int> K;
++  double D = 3.0, F3 = 3.0, r = 1.0;
++};
++inline const R5c& celda5r() {
++  static const R5c R5 = [] {
++    R5c o;
++    const double q = std::sqrt(1.5), h = std::sqrt(3.0) / 2, S12 = std::sqrt(0.5), s30 = std::sqrt(30.0);
++    const double U[5][2] = {{0, -1}, {-h, .5}, {h, .5}, {0, 0}, {0, 0}};
++    auto e5 = [&](int i) -> std::array<double, 4> {
++      return {U[i][0] / q, U[i][1] / q, -(i < 3 ? -2.0 : 3.0) / s30, i == 3 ? S12 : i == 4 ? -S12 : 0.0};
++    };
++    std::vector<std::array<int, 2>> id;
++    for (int i = 0; i < 5; i++)
++      for (int j = i + 1; j < 5; j++) {
++        const auto a = e5(i), b = e5(j);
++        o.V.push_back({a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]});
++        id.push_back({i, j});
++      }
++    auto tipo = [](const std::array<int, 2>& p) { return p[1] == 4 ? (p[0] == 3 ? 3 : 2) : p[1] == 3 ? 1 : 0; };
++    for (size_t a = 0; a < id.size(); a++)
++      for (size_t b = a + 1; b < id.size(); b++) {
++        int com = 0;
++        for (int u : id[a])
++          for (int v : id[b])
++            if (u == v) com++;
++        if (com != 1) continue;
++        const int ta = tipo(id[a]), tb = tipo(id[b]), lo = std::min(ta, tb), hi = std::max(ta, tb);
++        o.E.push_back({static_cast<int>(a), static_cast<int>(b)});
++        o.K.push_back(lo == 0 && hi == 1 ? 0 : lo == 2 && hi == 2 ? 1 : lo == 1 && hi == 2 ? 2 : 3);
++      }
++    // camaras: D (4D) y F3 (3D) tales que el hexagono sale regular y el
++    // triangulo con la misma proporcion que en el logo
++    const double tri = icosaedro().tri, r0 = 1 / q, zc = -1 / s30, zb = 4 / s30, c = S12;
++    auto cam = [&](double D) -> std::array<double, 3> {
++      const double ko = D / (D - c), ki = D / (D + c);
++      const double F3 = (r0 * zc * ko - r0 * ko * zb) / (r0 - r0 * ko);
++      return {F3, (r0 * ki * F3 / (F3 - zc * ki)) / (r0 * ko * F3 / (F3 - zc * ko)), r0 * ko * F3 / (F3 - zc * ko)};
++    };
++    double lo = 1.2, hi = 12;
++    for (int n = 0; n < 60; n++) {
++      const double md = (lo + hi) / 2;
++      if (cam(md)[1] < tri) {
++        lo = md;
++      } else {
++        hi = md;
++      }
++    }
++    const double D = (lo + hi) / 2;
++    const auto cm = cam(D);
++    if (std::isfinite(D) && std::isfinite(cm[0]) && std::isfinite(cm[2]) && cm[0] > 0.7 && cm[2] > 1e-3) {
++      o.D = D;
++      o.F3 = cm[0];
++      o.r = cm[2];
++    }
++    return o;
++  }();
++  return R5;
++}
++inline void celda5(X& x, double m, double a, double ay, double ax, double dest, double zoom = .9) {
++  const R5c& R5 = celda5r();
++  const double ca = std::cos(a), sa = std::sin(a);
++  std::vector<P> Q;
++  Q.reserve(R5.V.size());
++  double rmax = 0;
++  for (const auto& p : R5.V) {
++    const double z = p[2] * ca - p[3] * sa, w = p[2] * sa + p[3] * ca, k4 = k4D(R5.D, w);
++    const P r = rX(rY({p[0] * k4, p[1] * k4, z * k4}, ay), ax);
++    double den = R5.F3 - r[2];
++    if (!(den > .6)) den = .6;
++    const double k3 = R5.F3 / den;
++    Q.push_back({r[0] * k3, r[1] * k3, r[2]});
++    rmax = std::max(rmax, std::hypot(r[0] * k3, r[1] * k3));
++  }
++  const double den = mez(R5.r, rmax, m);
++  if (!(den > 1e-6)) return;
++  const double S = R * mez(1, zoom, m) / den;
++  std::vector<P> Pv;
++  Pv.reserve(Q.size());
++  for (const auto& q : Q) Pv.push_back({C + q[0] * S, C + q[1] * S, q[2] * 16});
++  auto prof = [&](double z) {
++    double v = .7 + .3 * z / 14;
++    v = v < .34 ? .34 : (v > 1 ? 1 : v);
++    return (1 - m) + m * v;
++  };
++  std::vector<Tz> L;
++  L.reserve(R5.E.size());
++  for (size_t n = 0; n < R5.E.size(); n++) {
++    const int c = R5.K[n];
++    const P& A = Pv[R5.E[n][0]];
++    const P& B = Pv[R5.E[n][1]];
++    const double z = (A[2] + B[2]) / 2;
++    if (x.chico) {
++      L.push_back({A, B, c == 0 ? x.pal.azul : x.pal.verde, c == 0 ? 3 - .5 * m : 2.5, c == 3 ? 0.0 : 1.0});
++    } else {
++      L.push_back({A, B, c == 0 ? x.pal.azul : x.pal.verde, c == 0 ? 3 - .7 * m : c == 3 ? 1.4 : 2.4 - .4 * m,
++                   (c == 3 ? .5 * m : 1) * prof(z)});
++    }
++  }
++  trazos(x, L, [&] { centro(x, m, dest, 1); });
++}
++
++// Version de barra del teseracto-a: el logo entero y quieto; dentro,
++// hexagonos que nacen del punto y crecen hasta fundirse con el de fuera.
++inline void tunel(X& x, double m, double e, double p, double ay, double ax) {
++  auto anillo6 = [&](double s, double al) {
++    if (!(al >= .02)) return;
++    x.ss = x.pal.azul;
++    x.lw = 2.4;
++    x.ga = al;
++    x.begin();
++    for (int i = 0; i < 6; i++) {
++      const double g = -PI / 2 + i * TAU / 6, r = R * (1 - .13 * m) * s;
++      x.lt(C + r * std::cos(g), C + r * std::sin(g));
++    }
++    x.close();
++    x.stroke();
++    x.ga = 1;
++  };
++  anillo6(mez(.14, .52, p), .55 * suave(p / .5) * e * m);
++  anillo6(mez(.52, 1, p), .55 * (1 - suave((p - .5) / .45)) * e * m);
++  ico(x, m, ay, ax, 0, 0);
++}
++
++// teseracto-a (11 s): logo -> volumen y sale el icosaedro interior -> dos vueltas del reves (4D) -> logo.
++inline void i_teseracto_a(X& x, double t) {
++  const double u = std::fmod(t, 11.0);
++  const double m = std::min(suave((u - 1) / 1.2), 1 - suave((u - 8.8) / 1.2));
++  const double e = std::min(suave((u - 1.3) / 1.3), 1 - suave((u - 8.4) / 1.3)), v = lim01((u - 2.3) / 6.3);
++  destello(x, (u - 1) / 1.2, (u - 1) / 1.2);
++  destello(x, (u - 8.8) / 1.2, 1 - (u - 8.8) / 1.2);
++  const double a = TAU * mez(v, suave(v), .6);
++  if (x.chico) {
++    tunel(x, m, e, std::fmod(a / PI, 1.0), .2 * std::sin(TAU * v), .08 * std::sin(PI * v));
++  } else {
++    prisma(x, m, e, a, .13 * std::sin(TAU * v), .08 * std::sin(PI * v), 0, false);
++  }
++}
++// teseracto-b (11 s): icosaedro con el dodecaedro dentro -> se cruzan y cambian de sitio -> vuelven -> logo.
++inline void i_teseracto_b(X& x, double t) {
++  const double u = std::fmod(t, 11.0);
++  const double m = std::min(suave((u - 1) / 1.2), 1 - suave((u - 8.8) / 1.2));
++  const double e = std::min(suave((u - 1.3) / 1.3), 1 - suave((u - 8.4) / 1.3)), v = lim01((u - 2.3) / 6.3);
++  const double W = mez(v, suave(v), .6);
++  destello(x, (u - 1) / 1.2, (u - 1) / 1.2);
++  destello(x, (u - 8.8) / 1.2, 1 - (u - 8.8) / 1.2);
++  duales(x, m, e, TAU * W, TAU / 3 * W * (x.chico ? 0 : 1), .3 * std::sin(TAU * v), .16 * std::sin(PI * v), 0);
++}
++// teseracto-c (11 s): logo -> aparecen las otras 18 aristas -> una vuelta 4D -> logo.
++inline void i_teseracto_c(X& x, double t) {
++  const double u = std::fmod(t, 11.0);
++  const double m = std::min(suave((u - 1) / 1.2), 1 - suave((u - 8.8) / 1.2)), v = lim01((u - 2) / 7);
++  const double W = mez(v, suave(v), .6);
++  destello(x, (u - 1) / 1.2, (u - 1) / 1.2);
++  destello(x, (u - 8.8) / 1.2, 1 - (u - 8.8) / 1.2);
++  celda5(x, m, TAU * W, .07 * std::sin(TAU * v), .05 * std::sin(PI * v), 0);
++}
++// reposo-t: el icosaedro con otro dentro, respirando despacio en 4D (12 s,
++// sin saltos). `abre` (0..1) lo hace nacer del logo plano.
++inline void i_reposo_t(X& x, double t, double abre) {
++  const double f = TAU * t / 12;
++  prisma(x, abre, abre, abre * .42 * std::sin(f), abre * .26 * std::sin(f * 2), abre * .1 * std::sin(f),
++         abre * .35 * std::sin(f * 3), true);
++}
++
++// logo-3d: logo plano -> gana volumen -> una vuelta -> logo plano (9 s).
++inline void i_logo3d(X& x, double t) {
++  const double u = std::fmod(t, 9.0), W = suave((u - 1) / 7);
++  const double m = std::min(suave((u - 1) / 1.3), 1 - suave((u - 6.7) / 1.3));
++  destello(x, (u - 1) / 1.3, (u - 1) / 1.3);
++  destello(x, (u - 6.7) / 1.3, 1 - (u - 6.7) / 1.3);
++  ico(x, m, TAU * W, .45 * std::sin(PI * W), 0, 1);
++}
++// logo-3d-b: el logo plano se transmuta en dodecaedro, gira y vuelve (9 s).
++inline void i_logo3d_b(X& x, double t) {
++  const double u = std::fmod(t, 9.0), W = suave((u - 1) / 7);
++  const double m = std::min(suave((u - 1) / 1.3), 1 - suave((u - 6.7) / 1.3));
++  destello(x, (u - 1) / 1.3, (u - 1) / 1.3);
++  destello(x, (u - 6.7) / 1.3, 1 - (u - 6.7) / 1.3);
++  ico(x, 0, 0, 0, 0, 0, 1 - suave((m - .25) / .6));
++  dode(x, suave((m - .1) / .6), TAU * W, .45 * std::sin(PI * W), 0);
++}
++
++// Reposo: el icosaedro meciendose, en calma. `abre` (0..1) lo hace nacer
++// del logo plano (enlaza sin salto con el final del logo de arranque).
++inline void i_reposo(X& x, double t, double abre) {
++  ico(x, abre, abre * .3 * std::sin(t * .7), abre * .12 * std::sin(t * .5), abre * .4 * std::sin(t * 1.6),
++      x.chico ? .3 : .5);
++}
++// reposo-b: el dodecaedro meciendose; con abre < 1 se funde desde el logo plano.
++inline void i_reposo_b(X& x, double t, double abre) {
++  if (abre < 1) ico(x, 0, 0, 0, 0, 0, 1 - suave((abre - .25) / .6));
++  dode(x, abre < 1 ? suave((abre - .1) / .6) : 1.0, .35 * std::sin(t * .7), .14 * std::sin(t * .5),
++       .4 * std::sin(t * 1.6));
++}
++
++// transmutacion (16 s): logo -> fuego -> tierra -> aire -> eter -> agua (icosaedro) -> logo.
++inline void i_transmutacion(X& x, double t) {
++  const double u = std::fmod(t, 16.0), D = 2.3, ini = 1, fin = ini + 4 * D;
++  const double gy = u * 1.25, gx = .42 + .1 * std::sin(u * .8);
++  struct Sol {
++    const Solido* s;
++    double sc;
++    Col col;
++  };
++  const Sol SOL[4] = {{&tetraedro(), 25, x.pal.ambar},
++                      {&cubo(), 23.5, x.pal.verde},
++                      {&octaedro(), 25, x.pal.blanco},
++                      {&dodecaedro().s, 24, x.pal.rosa}};
++  for (int i = 0; i <= 4; i++) {
++    const double f = (u - (ini + i * D) + .35) / .7;
++    destello(x, f, .3 + .45 * std::sin(PI * lim01(f)));
++  }
++  for (int i = 0; i < 4; i++) {
++    const double a = std::min(suave((u - (ini + i * D) + .3) / .6), 1 - suave((u - (ini + (i + 1) * D) + .3) / .6));
++    alambre(x, *SOL[i].s, SOL[i].sc * (.72 + .28 * a), gy, gx, a, SOL[i].col);
++  }
++  if (u < ini + .4) {
++    ico(x, 0, 0, 0, 0, 0, 1 - suave((u - ini + .3) / .6));
++  } else if (u > fin - .4) {
++    const double a = suave((u - fin + .3) / .6), W = suave((u - fin) / 3.6), m = 1 - suave((u - fin - 2.6) / 1.2);
++    ico(x, m, -TAU * 1.25 * (1 - W), gx * (1 - W), 0, 1, a);
++  }
++}
++
++inline void i_escuchando(X& x, double t) {
++  x.ga = 1;
++  circ(x, C, C, 3 + .9 * std::sin(t * 6), true);
++  x.lw = 2;
++  for (int i = 0; i < 3; i++) {
++    const double p = std::fmod(t * .7 + i / 3.0, 1.0);
++    x.ga = 1 - p;
++    circ(x, C, C, 4 + p * 15);
++  }
++  x.ga = 1;
++}
++
++inline void i_pensando(X& x, double t) {
++  auto T = [&](const P& p) { return pr(rX(rY(p, t * 1.5), .38)); };
++  std::array<P, 4> V;
++  V[0] = T({0, -16.5, 0});
++  for (int i = 0; i < 3; i++) {
++    const double a = i * TAU / 3;
++    V[i + 1] = T({15.5 * std::cos(a), 5.5, 15.5 * std::sin(a)});
++  }
++  const int idx[6][2] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {2, 3}, {3, 1}};
++  std::vector<std::array<P, 2>> E;
++  for (const auto& e : idx) E.push_back({V[e[0]], V[e[1]]});
++  std::stable_sort(E.begin(), E.end(), [](const std::array<P, 2>& p, const std::array<P, 2>& q) {
++    return p[0][2] + p[1][2] < q[0][2] + q[1][2];
++  });
++  x.lw = 2.4;
++  size_t k = 0;
++  for (; k < 3; k++) seg(x, E[k][0], E[k][1], 11);
++  x.ga = 1;
++  circ(x, C, C + 1, 2.2, true);
++  for (; k < 6; k++) seg(x, E[k][0], E[k][1], 11);
++  x.ga = 1;
++}
++
++inline void i_cerebro(X& x, double t) {
++  const double gy = t * .9, E = 1.22, rx = 8.6, rz = 14, g = 1.3;
++  auto T = [&](const P& p) { return pr(rX(rY({p[0] * E, p[1] * E, p[2] * E}, gy), -.3), 0, -1.5); };
++  const double W = std::sqrt(100 * std::cos(gy) * std::cos(gy) + 196 * std::sin(gy) * std::sin(gy));
++  x.ga = .13;
++  x.begin();
++  cairo_save(x.c);
++  cairo_translate(x.c, C, C - 2.5);
++  cairo_scale(x.c, std::max(W * E, 0.01), 9.4 * E);
++  cairo_arc(x.c, 0, 0, 1, 0, TAU);
++  cairo_restore(x.c);
++  x.fill();
++  struct Pz {
++    P a, b;
++    double z, w;
++  };
++  std::vector<Pz> piezas;
++  piezas.reserve(224);
++  for (int si = 0; si < 2; si++) {
++    const double s = si == 0 ? -1 : 1;
++    for (int j = 0; j < 7; j++) {
++      const double psi0 = -1.5 + j * .5;
++      std::array<P, 17> pts;
++      std::array<double, 17> nz;
++      for (int i = 0; i <= 16; i++) {
++        const double fi = .1 + (PI - .2) * i / 16.0, on = j == 0 ? 0 : 1;
++        const double psi = psi0 + on * .19 * std::sin(6 * fi + j * 1.9 + s);
++        const double b = 1 + on * .05 * std::sin(9 * fi + j * 2.3);
++        const double sy = std::sin(fi) * std::sin(psi);
++        const P q = {s * (g + rx * b * std::sin(fi) * std::max(0.0, std::cos(psi))),
++                     (sy < 0 ? 10 : 7) * b * sy, rz * b * std::cos(fi)};
++        pts[i] = T(q);
++        nz[i] = rX(rY({q[0] - s * g, q[1], q[2] * .6}, gy), -.3)[2];
++      }
++      for (int i = 0; i < 16; i++) piezas.push_back({pts[i], pts[i + 1], (nz[i] + nz[i + 1]) / 2, j == 0 ? 2.0 : 1.5});
++    }
++  }
++  auto Tc = [&](const P& p) { return T({p[0], p[1] + 7, p[2] - 9.5}); };
++  x.lw = 1.3;
++  poli(x, anillo(1, 12, [&](const P& p) { return Tc({p[0] * 6, p[2], p[1] * 4.5}); }), 16, .7, true);
++  poli(x, anillo(1, 12, [&](const P& p) { return Tc({p[0] * 6, p[1] * 3.6, 0}); }), 16, .7, true);
++  x.lw = 2;
++  seg(x, T({0, 6.5, -4}), T({0, 13, -5.5}), 16, .9);
++  std::stable_sort(piezas.begin(), piezas.end(), [](const Pz& p, const Pz& q) { return p.z < q.z; });
++  for (const auto& p : piezas) {
++    x.lw = p.w;
++    x.ga = p.z < 0 ? .15 : std::min(1.0, .5 + p.z / 9);
++    x.begin();
++    x.mt(p.a[0], p.a[1]);
++    x.lt(p.b[0], p.b[1]);
++    x.stroke();
++  }
++  x.ga = 1;
++}
++
++inline void i_ejecutando(X& x, double t) {
++  Tr T = [&](const P& p) { return pr(rY(rX(p, .72), .4 * std::sin(t * .8)), 0, 1); };
++  struct G {
++    double z, ox, oy, r;
++    int n;
++    double ang;
++  };
++  std::array<G, 2> gs = {{{0, -4.5, 3.5, 11.5, 9, t * 1.1}, {0, 8.2, -6.5, 7.5, 6, -t * 1.65 + .32}}};
++  for (auto& e : gs) e.z = T({e.ox, e.oy, 0})[2];
++  if (gs[1].z < gs[0].z) std::swap(gs[0], gs[1]);
++  for (const auto& e : gs) engranaje(x, e.ox, e.oy, e.r, e.n, e.ang, T);
++}
++
++inline void i_buscando(X& x, double t) {
++  const double r = 15.5;
++  auto T = [&](const P& p) { return pr(rZ(rX(rY(p, t * .8), -.32), .36)); };
++  x.ga = .12;
++  circ(x, C, C, r * 1.07, true);
++  std::vector<std::array<P, 24>> L;
++  L.reserve(6);
++  for (int m = 0; m < 3; m++) {
++    std::array<P, 24> o;
++    for (int i = 0; i < 24; i++) {
++      const double a = i * TAU / 24;
++      o[i] = T(rY({r * std::cos(a), r * std::sin(a), 0}, m * PI / 3));
++    }
++    L.push_back(o);
++  }
++  const double lats[3] = {-.7, 0, .7};
++  for (double la : lats) {
++    std::array<P, 24> o;
++    const double rr = r * std::cos(la);
++    for (int i = 0; i < 24; i++) {
++      const double a = i * TAU / 24;
++      o[i] = T({rr * std::cos(a), r * std::sin(la), rr * std::sin(a)});
++    }
++    L.push_back(o);
++  }
++  x.lw = 1.3;
++  for (const auto& o : L) {
++    for (int i = 0; i < 24; i++) {
++      const P& a = o[i];
++      const P& b = o[(i + 1) % 24];
++      x.ga = a[2] + b[2] > 0 ? .95 : .2;
++      x.begin();
++      x.mt(a[0], a[1]);
++      x.lt(b[0], b[1]);
++      x.stroke();
++    }
++  }
++  x.ga = 1;
++  x.lw = 2;
++  circ(x, C, C, r * 1.07);
++}
++
++inline void i_investigando(X& x, double t) {
++  const double r = 17;
++  struct Cosa {
++    double z;
++    int tipo;
++    P a, b;
++  };
++  std::vector<Cosa> cosas;
++  cosas.reserve(90);
++  for (int i = 0; i < 3; i++) {
++    Tr T = [&, i](const P& p) { return pr(rY(rZ(rX(p, 1.2), i * PI / 3), t * .6)); };
++    const auto o = anillo(r, 28, T);
++    for (int k = 0; k < 28; k++) cosas.push_back({(o[k][2] + o[(k + 1) % 28][2]) / 2, 0, o[k], o[(k + 1) % 28]});
++    const double a = t * 2.6 + i * 2.1;
++    const P e = T({r * std::cos(a), r * std::sin(a), 0});
++    cosas.push_back({e[2], 1, e, e});
++  }
++  cosas.push_back({0, 2, {0, 0, 0}, {0, 0, 0}});
++  std::stable_sort(cosas.begin(), cosas.end(), [](const Cosa& p, const Cosa& q) { return p.z < q.z; });
++  x.lw = 1.5;
++  for (const auto& c : cosas) {
++    if (c.tipo == 0) {
++      seg(x, c.a, c.b, r);
++    } else if (c.tipo == 1) {
++      x.ga = 1;
++      circ(x, c.a[0], c.a[1], 1.5 + .7 * (c.z / r + 1) / 2, true);
++    } else {
++      x.ga = 1;
++      circ(x, C, C, 3, true);
++      const Col fs = x.fs;
++      x.fs = x.pal.blanco;
++      x.ga = .8;
++      circ(x, C - 1, C - 1, .9, true);
++      x.fs = fs;
++    }
++  }
++  x.ga = 1;
++}
++
++inline void i_esfera(X& x, double t) {
++  const double r = 10.5;
++  struct An {
++    double ra, ix, iz, a;
++  };
++  const An an[2] = {{17.5, 1.25, -.45, t * 2}, {14.5, 1.15, .8, -t * 1.5 + 1}};
++  struct Del {
++    bool punto;
++    P a, b;
++  };
++  std::vector<Del> del;
++  auto tapa = [&](const P& p) { return p[2] < 0 && std::hypot(p[0] - C, p[1] - C) < r; };
++  x.lw = 1.4;
++  for (const auto& e : an) {
++    Tr T = [&](const P& p) { return pr(rY(rZ(rX(p, e.ix), e.iz), .5 * std::sin(t * .5))); };
++    const auto o = anillo(e.ra, 30, T);
++    const P s = T({e.ra * std::cos(e.a), e.ra * std::sin(e.a), 0});
++    for (int k = 0; k < 30; k++) {
++      const P& p = o[k];
++      const P& q = o[(k + 1) % 30];
++      if (p[2] + q[2] > 0) {
++        del.push_back({false, p, q});
++      } else if (!tapa(p) && !tapa(q)) {
++        seg(x, p, q, e.ra, .7);
++      }
++    }
++    if (s[2] > 0) {
++      del.push_back({true, s, s});
++    } else if (!tapa(s)) {
++      x.ga = .5;
++      circ(x, s[0], s[1], 1.5, true);
++    }
++  }
++  x.ga = .2;
++  circ(x, C, C, r, true);
++  x.ga = 1;
++  x.lw = 2;
++  circ(x, C, C, r);
++  x.lw = 1.3;
++  x.ga = .75;
++  x.begin();
++  cairo_arc(x.c, C, C, r * .66, PI * 1.08, PI * 1.55);
++  x.stroke();
++  x.lw = 1.5;
++  for (const auto& d : del) {
++    if (!d.punto) {
++      seg(x, d.a, d.b, 17);
++    } else {
++      x.ga = 1;
++      circ(x, d.a[0], d.a[1], 2, true);
++    }
++  }
++  x.ga = 1;
++}
++
++inline void i_leyendo(X& x, double t) {
++  const double w = 14, hy = 10.5, f0 = .42;
++  auto T = [&](const P& p) { return pr(rX(rY(p, .22 * std::sin(t * .6)), .42), 0, -1); };
++  auto hoja = [&](double psi) -> std::vector<P> {
++    const double cx = w * std::cos(psi), cz = w * std::sin(psi);
++    return {T({0, -hy, 0}), T({cx, -hy, cz}), T({cx, hy, cz}), T({0, hy, 0})};
++  };
++  auto texto = [&](double psi, double al) {
++    x.lw = 1.3;
++    const double ys[4] = {-5.5, -1.5, 2.5, 6.5};
++    for (double y : ys) {
++      const double a = .22, b = y > 6 ? .6 : .84;
++      seg(x, T({w * a * std::cos(psi), y, w * a * std::sin(psi)}), T({w * b * std::cos(psi), y, w * b * std::sin(psi)}), 14, al);
++    }
++  };
++  const double psis[2] = {f0, PI - f0};
++  for (double psi : psis) {
++    const auto h = hoja(psi);
++    relleno(x, h, .1);
++    x.lw = 2;
++    poli(x, h, 14, 1, true);
++    texto(psi, .6);
++  }
++  const double p = suave(std::fmod(t * .42, 1.0) * 1.7), psi = f0 + (PI - 2 * f0) * p;
++  if (p > .02 && p < .98) {
++    const auto h = hoja(psi);
++    relleno(x, h, .16);
++    x.lw = 1.6;
++    poli(x, h, 14, 1, true);
++  }
++  x.ga = 1;
++}
++
++inline void i_editando(X& x, double t) {
++  const double p = std::min(1.0, std::fmod(t * .42, 1.25)), tx = -14 + 23 * p;
++  auto fy = [](double u) { return 14 + 1.7 * std::sin(u * 1.1); };
++  x.lw = 1.8;
++  x.ga = 1;
++  x.begin();
++  for (double u = -14; u <= tx + .01; u += 1) x.lt(C + u, C + fy(u));
++  x.lt(C + tx, C + fy(tx));
++  x.stroke();
++  util(x, tx, fy(tx),
++       {{0, .3, x.pal.blanco}, {1.9, 1, x.pal.verde}, {5.5, 2.9, x.pal.verde}, {20, 2.9, x.pal.azul},
++        {22.5, 2.9, x.pal.rosa}, {24.5, 2.9, x.pal.rosa}},
++       6, t * 2.2, .56, -.38);
++}
++
++inline void i_creando(X& x, double t) {
++  Tr T = [&](const P& p) { return pr(rZ(rY(rX(p, .95), .45 * std::sin(t * .9)), -.18), -1, 5); };
++  auto forma = [&](double z) {
++    std::vector<P> o;
++    o.reserve(30);
++    for (int i = 0; i < 30; i++) {
++      const double a = i * TAU / 30, m = 1 - .2 * std::exp(-((a - 2.5) * (a - 2.5)) * 5);
++      o.push_back(T({17 * m * std::cos(a), 13.5 * m * std::sin(a), z}));
++    }
++    return o;
++  };
++  const auto arr = forma(1.2);
++  x.lw = 1.2;
++  poli(x, forma(-1.2), 18, .4, true);
++  relleno(x, arr, .13);
++  x.lw = 2;
++  poli(x, arr, 18, 1, true);
++  x.lw = 1.4;
++  poli(x, anillo(2.6, 10, [&](const P& p) { return T({p[0] - 7.5, p[1] + 5, 1.2}); }), 18, 1, true);
++  struct M {
++    double mx, my;
++    Col col;
++  };
++  const M ms[4] = {{-9, -5, x.pal.azul}, {-2, -8.5, x.pal.blanco}, {5.5, -7.5, x.pal.ambar}, {11, -2.5, x.pal.rosa}};
++  const Col base = x.ss;
++  for (const auto& m : ms) {
++    x.fs = m.col;
++    relleno(x, anillo(2.5, 10, [&](const P& p) { return T({p[0] + m.mx, p[1] + m.my, 1.2}); }), .95);
++  }
++  const int k = static_cast<int>(std::floor(t * .8)) % 4;
++  const double sube = 4 * std::abs(std::sin(t * .8 * PI));
++  const P b = T({ms[k].mx, ms[k].my, 1.2 + sube});
++  util(x, b[0] - C, b[1] - C,
++       {{0, .3, ms[k].col}, {2.6, 1.9, ms[k].col}, {5, 1.5, x.pal.blanco}, {7.5, 1.3, base}, {19, .9, base}},
++       6, t, .5, -.5);
++  x.ambos(base);
++}
++
++inline void i_creando2(X& x, double t) {
++  const Col base = x.ss;
++  const double u = std::fmod(t * .38, 1.3), p = std::min(1.0, u), al = u > 1 ? 1 - (u - 1) / .3 : 1;
++  auto Pq = [](double q) -> std::array<double, 2> {
++    return {-15 + 29 * q, 9 + 6.5 * std::sin(q * TAU * .95 + .4) * (1 - .25 * q)};
++  };
++  x.ss = x.pal.azul;
++  for (int i = 0; i < 28; i++) {
++    const double q0 = i / 28.0, q1 = (i + 1) / 28.0;
++    if (q0 >= p) break;
++    const auto a = Pq(q0), b = Pq(std::min(q1, p));
++    x.ga = .7 * al;
++    x.lw = 2.4 + 2.6 * std::sin(PI * std::min(1.0, q0 * 1.15 + .12));
++    linea(x, C + a[0], C + a[1], C + b[0], C + b[1]);
++  }
++  x.ss = x.pal.blanco;
++  x.lw = 1.1;
++  const double des[2][3] = {{-13, -9, 0}, {-6, -15, 2.1}};
++  for (const auto& d : des) {
++    const double s = 2.6 * std::abs(std::sin(t * 2.3 + d[2]));
++    x.ga = .9;
++    linea(x, C + d[0] - s, C + d[1], C + d[0] + s, C + d[1]);
++    linea(x, C + d[0], C + d[1] - s, C + d[0], C + d[1] + s);
++  }
++  const auto e = Pq(p);
++  util(x, e[0], e[1],
++       {{0, .3, x.pal.azul}, {3, 2.5, x.pal.azul}, {5.5, 2, x.pal.azul}, {6, 2, x.pal.blanco},
++        {9, 1.9, x.pal.blanco}, {9.5, 1.5, base}, {23, 1, base}},
++       6, t * 1.2, .5 + .12 * std::sin(p * 6), -.42);
++  x.ambos(base);
++}
++
++inline void i_hablando(X& x, double t) {
++  x.lw = 3;
++  x.ga = 1;
++  for (int i = 0; i < 5; i++) {
++    const double h = 3 + (i == 2 ? 12 : (i % 2 ? 9 : 5)) * (.35 + .65 * std::abs(std::sin(t * 5 + i * 1.3)));
++    linea(x, 18 + i * 7, C - h, 18 + i * 7, C + h);
++  }
++}
++
++inline void i_error(X& x, double t) {
++  const double dx = std::sin(t * 22) * (std::sin(t * 2) > .3 ? 1.2 : 0), gy = .75 * std::sin(t * 1.3);
++  Tr T = [&](const P& p) { return pr(rX(rY(p, gy), .1), dx, 2); };
++  std::vector<std::array<double, 2>> tri;
++  for (int i = 0; i < 3; i++) {
++    const double a = -PI / 2 + i * TAU / 3;
++    tri.push_back({16.5 * std::cos(a), 16.5 * std::sin(a)});
++  }
++  placa(x, tri, 2.2, T, 17, true, 2.6, 1.4);
++  const double z = std::cos(gy) >= 0 ? 2.2 : -2.2;
++  x.lw = 2.8;
++  x.ga = 1;
++  const P e1 = T({0, -6.5, z}), e2 = T({0, 2, z});
++  linea(x, e1[0], e1[1], e2[0], e2[1]);
++  const P pt = T({0, 6.5, z});
++  x.ga = 1;
++  circ(x, pt[0], pt[1], 1.6, true);
++}
++
++inline void i_listo(X& x, double t) {
++  const double u = std::fmod(t * .5, 2.0), e = suave(u * 3);
++  const double sc = e * (1 + .18 * std::sin(PI * std::min(1.0, u * 3))), gy = .7 * std::sin(t * 1.5);
++  Tr T = [&](const P& p) { return pr(rX(rY({p[0] * sc, p[1] * sc, p[2] * sc}, gy), -.12)); };
++  placa(x, {{-13, 1}, {-4, 10}, {13, -9}}, 2.6, T, 15, false, 3.4, 1.6);
++}
++
++// Duracion de los iconos de UNA sola pasada (0 = en bucle). Son los logos
++// de arranque/despertar: empiezan y terminan en el logo plano.
++inline double duracion(const std::string& id) {
++  if (id == "logo-3d" || id == "logo-3d-b") return 9.0;
++  if (id == "teseracto-a" || id == "teseracto-b" || id == "teseracto-c") return 11.0;
++  if (id == "transmutacion") return 16.0;
++  return 0.0;
++}
++
++// Variantes de reposo (bucle, nacen del logo plano con `abre`).
++inline bool esReposo(const std::string& id) { return id == "reposo" || id == "reposo-t" || id == "reposo-b"; }
++
++// Iconos que SON el logo (sin hexagono de marco).
++inline bool esLogo(const std::string& id) { return esReposo(id) || duracion(id) > 0.0; }
++
++inline bool conocido(const std::string& id) {
++  static const char* const IDS[] = {"logo-3d",     "logo-3d-b",   "transmutacion", "teseracto-a", "teseracto-b",
++                                    "teseracto-c", "reposo",      "reposo-b",      "reposo-t",    "escuchando",
++                                    "pensando",    "cerebro",     "ejecutando",    "buscando",    "investigando",
++                                    "esfera",      "leyendo",     "editando",      "creando",     "creando-2",
++                                    "hablando",    "error",       "listo"};
++  for (const char* s : IDS) {
++    if (id == s) return true;
++  }
++  return false;
++}
++
++// Dibuja el icono `id` en el instante t (s desde que se puso) centrado en
++// un lienzo de w x h. `abre` solo lo usan los reposos. El dibujo
++// simplificado (bandera chico) se activa con el tamano REAL del lienzo.
++inline void dibujar(cairo_t* cr, const std::string& id, double t, double w, double h, const Paleta& pal,
++                    double abre = 1.0) {
++  if (cr == nullptr || !(w >= 8.0) || !(h >= 8.0) || !(w < 1e5) || !(h < 1e5) || !std::isfinite(t)) return;
++  if (t < 0) t = 0;
++  const double lado = w < h ? w : h;
++  const double s = lado / 64.0;
++  cairo_save(cr);
++  cairo_translate(cr, (w - lado) / 2.0, (h - lado) / 2.0);
++  cairo_scale(cr, s, s);
++  cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
++  cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
++  X x{cr, pal};
++  x.chico = lado <= 48.0;
++  const bool err = id == "error";
++  const bool logo = esLogo(id) || !conocido(id);
++  if (!logo) hex(x, err ? pal.rojo : pal.azul);
++  x.ambos(err ? pal.rojo : pal.verde);
++  x.ga = 1;
++  const double ab = lim01(abre);
++  if (id == "logo-3d") {
++    i_logo3d(x, t);
++  } else if (id == "logo-3d-b") {
++    i_logo3d_b(x, t);
++  } else if (id == "transmutacion") {
++    i_transmutacion(x, t);
++  } else if (id == "teseracto-a") {
++    i_teseracto_a(x, t);
++  } else if (id == "teseracto-b") {
++    i_teseracto_b(x, t);
++  } else if (id == "teseracto-c") {
++    i_teseracto_c(x, t);
++  } else if (id == "reposo-t") {
++    i_reposo_t(x, t, ab);
++  } else if (id == "reposo-b") {
++    i_reposo_b(x, t, ab);
++  } else if (id == "escuchando") {
++    i_escuchando(x, t);
++  } else if (id == "pensando") {
++    i_pensando(x, t);
++  } else if (id == "cerebro") {
++    i_cerebro(x, t);
++  } else if (id == "ejecutando") {
++    i_ejecutando(x, t);
++  } else if (id == "buscando") {
++    i_buscando(x, t);
++  } else if (id == "investigando") {
++    i_investigando(x, t);
++  } else if (id == "esfera") {
++    i_esfera(x, t);
++  } else if (id == "leyendo") {
++    i_leyendo(x, t);
++  } else if (id == "editando") {
++    i_editando(x, t);
++  } else if (id == "creando") {
++    i_creando(x, t);
++  } else if (id == "creando-2") {
++    i_creando2(x, t);
++  } else if (id == "hablando") {
++    i_hablando(x, t);
++  } else if (id == "error") {
++    i_error(x, t);
++  } else if (id == "listo") {
++    i_listo(x, t);
++  } else {
++    i_reposo(x, t, ab);
++  }
++  cairo_restore(cr);
++}
++
++}  // namespace waybar::modules::iconos
 diff --git a/meson.build b/meson.build
 index a0c5b0d8..e5fe9eb6 100644
 --- a/meson.build
