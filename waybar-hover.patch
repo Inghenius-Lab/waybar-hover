@@ -152,10 +152,10 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..e87a2cea
+index 00000000..efd13a3f
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,187 @@
+@@ -0,0 +1,198 @@
 +#pragma once
 +
 +#include <array>
@@ -209,6 +209,8 @@ index 00000000..e87a2cea
 +  void setRamificado(bool ramificado);
 +  void setPixel(bool pixel);
 +  void setConstelacion(bool constelacion);
++  // Iconos animados del hexagono (2026-11-19): id vacio = modo normal.
++  void setIcono(const std::string& id, double velocidad = 1.0);
 +
 + protected:
 +  bool on_draw(const Cairo::RefPtr<Cairo::Context>& cr) override;
@@ -228,6 +230,7 @@ index 00000000..e87a2cea
 +  void drawRamificado(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  void drawPixel(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  void drawConstelacion(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
++  void drawIcono(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h);
 +  bool resolveColor(const std::string& name, double& r, double& g, double& b);
 +  bool gradientColor(double t, double& r, double& g, double& b);
 +  bool campoColor(double u, double& r, double& g, double& b);
@@ -260,6 +263,13 @@ index 00000000..e87a2cea
 +  bool ramificado_ = false;
 +  bool pixel_ = false;
 +  bool constelacion_ = false;
++  // Modo icono: id del dibujo, tick en que se puso, velocidad, y
++  // colores del tema resueltos (cache ~1 s).
++  std::string icono_;
++  int icono_t0_ = 0;
++  double icono_vel_ = 1.0;
++  std::array<double, 12> icono_cols_{};
++  int icono_cols_tick_ = -100000;
 +  // Chispas vivas del rayo (diseno 5, 2026-11-11): nacen de la
 +  // linea segun el nivel, suben, caen con gravedad y se apagan.
 +  struct ChispaViva {
@@ -321,6 +331,7 @@ index 00000000..e87a2cea
 +  double full_width_ = 86.0;
 +  double height_ = 26.0;
 +  double shown_width_ = 0.0;
++  bool modo_icono_ = false;
 +  double target_width_ = 0.0;
 +  sigc::connection anim_conn_;
 +  sigc::connection hold_conn_;
@@ -1142,11 +1153,12 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..6157529e
+index 00000000..d700358c
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,2129 @@
+@@ -0,0 +1,2236 @@
 +#include "modules/wave.hpp"
++#include "modules/wave_iconos.hpp"
 +
 +#include <gtk/gtk.h>
 +#include <spdlog/spdlog.h>
@@ -1331,6 +1343,15 @@ index 00000000..6157529e
 +      [this]() {
 +        ++tick_;
 +        phase_ = std::fmod(phase_ + 0.0033, 1.0);
++        if (!icono_.empty()) {
++          // Iconos (2026-11-19): 15 fps (10 en reposo), y NADA si el
++          // lienzo no esta a la vista (barra oculta, ancho 0).
++          const int cada = icono_ == "reposo" ? 3 : 2;
++          if (tick_ % cada == 0 && get_mapped() && get_allocation().get_width() >= 16) {
++            queue_draw();
++          }
++          return true;
++        }
 +        if (!values_.empty()) {
 +          if (disp_.size() != values_.size() || onda_ || chispas_ || simbolos_ || estela_ || rayo_ || capas_ || ramificado_ || pixel_ || constelacion_) {
 +            disp_ = values_;
@@ -1512,6 +1533,59 @@ index 00000000..6157529e
 +  }
 +}
 +
++void WaveCanvas::setIcono(const std::string& id, double velocidad) {
++  if (id == icono_) {
++    return;
++  }
++  icono_ = id;
++  icono_t0_ = tick_;
++  icono_vel_ = (velocidad > 0.1 && velocidad < 8.0) ? velocidad : 1.0;
++  queue_draw();
++}
++
++void WaveCanvas::drawIcono(const Cairo::RefPtr<Cairo::Context>& cr, double w, double h) {
++  if (w < 16 || h < 8) {
++    return;
++  }
++  // Colores del tema (matugen), cache ~1 s: hexagono = color del
++  // modulo (acento), interior = primera parada del degradado
++  // (terciario), brillo = texto, error = rojo del tema. Si alguno
++  // no resuelve, se queda el del diseno.
++  if (tick_ - icono_cols_tick_ > 30 || tick_ < icono_cols_tick_) {
++    icono_cols_tick_ = tick_;
++    iconos::Paleta base;
++    icono_cols_ = {base.azul.r,  base.azul.g,  base.azul.b,  base.verde.r,  base.verde.g,  base.verde.b,
++                   base.blanco.r, base.blanco.g, base.blanco.b, base.rojo.r, base.rojo.g, base.rojo.b};
++    resolveColor(color_, icono_cols_[0], icono_cols_[1], icono_cols_[2]);
++    resolveColor(gradient_.empty() ? std::string("waybar-tertiary") : gradient_.front(),
++                 icono_cols_[3], icono_cols_[4], icono_cols_[5]);
++    resolveColor("waybar-text", icono_cols_[6], icono_cols_[7], icono_cols_[8]);
++    resolveColor("waybar-error", icono_cols_[9], icono_cols_[10], icono_cols_[11]);
++  }
++  iconos::Paleta pal;
++  pal.azul = {icono_cols_[0], icono_cols_[1], icono_cols_[2]};
++  pal.verde = {icono_cols_[3], icono_cols_[4], icono_cols_[5]};
++  pal.blanco = {icono_cols_[6], icono_cols_[7], icono_cols_[8]};
++  pal.rojo = {icono_cols_[9], icono_cols_[10], icono_cols_[11]};
++  int dt = tick_ - icono_t0_;
++  if (dt < 0) {
++    dt = 0;
++    icono_t0_ = tick_;
++  }
++  double t = dt * 0.033 * icono_vel_;
++  // Los de UNA pasada (logo-3d) terminan en el logo plano y de ahi
++  // nace el reposo, sin salto y sin bucle.
++  const double dur = iconos::duracion(icono_);
++  if (dur > 0.0 && t >= dur) {
++    icono_ = "reposo";
++    icono_t0_ = tick_;
++    icono_vel_ = 1.0;
++    t = 0.0;
++  }
++  const double abre = icono_ == "reposo" ? iconos::suave(t / 1.2) : 1.0;
++  iconos::dibujar(cr->cobj(), icono_, t, w, h, pal, abre);
++}
++
 +void WaveCanvas::setConstelacion(bool constelacion) {
 +  if (constelacion != constelacion_) {
 +    constelacion_ = constelacion;
@@ -1660,6 +1734,10 @@ index 00000000..6157529e
 +  const double w = alloc.get_width();
 +  const double h = alloc.get_height();
 +  const size_t n = values_.size();
++  if (!icono_.empty()) {
++    drawIcono(cr, w, h);
++    return false;
++  }
 +  if (w < 4 || h < 4 || n == 0) {
 +    return false;
 +  }
@@ -2877,6 +2955,7 @@ index 00000000..6157529e
 +  // Start collapsed: the width only opens (animated) when sound
 +  // actually arrives, so the bar boots with the center at rest.
 +  canvas_.set_size_request(0, static_cast<int>(height_));
++  modo_icono_ = config["icono"].isBool() && config["icono"].asBool();
 +  if (config["color"].isString()) {
 +    canvas_.setColor(config["color"].asString());
 +  }
@@ -3133,6 +3212,45 @@ index 00000000..6157529e
 +    event_box_.hide();
 +  } else {
 +    parseOutputJson();
++
++    if (modo_icono_) {
++      // Modo icono (2026-11-19): la clase "i-<id>" elige el dibujo;
++      // "hide" lo quita. Sin espera de 5 s ni animacion de ancho: el
++      // icono aparece y desaparece de una vez (lo releva la caratula).
++      std::string id;
++      bool fuera = false;
++      double vel = 1.0;
++      for (auto const& c : class_) {
++        if (c == "hide") {
++          fuera = true;
++        } else if (c == "rapido") {
++          vel = 2.0;
++        } else if (c.size() > 2 && c.compare(0, 2, "i-") == 0 && iconos::conocido(c.substr(2))) {
++          id = c.substr(2);
++        }
++      }
++      hold_conn_.disconnect();
++      anim_conn_.disconnect();
++      auto style = wrap_.get_style_context();
++      if (fuera || id.empty()) {
++        vis_ = Vis::Gone;
++        shown_width_ = target_width_ = 0.0;
++        canvas_.set_size_request(0, static_cast<int>(height_));
++        style->add_class("hide");
++      } else {
++        vis_ = Vis::Shown;
++        shown_width_ = target_width_ = full_width_;
++        canvas_.set_size_request(static_cast<int>(full_width_ + 0.5), static_cast<int>(height_));
++        canvas_.setIcono(id, vel);
++        style->remove_class("hide");
++      }
++      if (tooltipEnabled()) {
++        event_box_.set_tooltip_markup(tooltip_);
++      }
++      event_box_.show();
++      AModule::update();
++      return;
++    }
 +
 +    bool silence = false;
 +    for (auto const& c : class_) {
