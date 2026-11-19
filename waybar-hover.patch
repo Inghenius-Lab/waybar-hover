@@ -1153,7 +1153,7 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..d700358c
+index 00000000..9594700e
 --- /dev/null
 +++ b/src/modules/wave.cpp
 @@ -0,0 +1,2236 @@
@@ -3224,7 +3224,7 @@ index 00000000..d700358c
 +        if (c == "hide") {
 +          fuera = true;
 +        } else if (c == "rapido") {
-+          vel = 2.0;
++          vel = 3.0;
 +        } else if (c.size() > 2 && c.compare(0, 2, "i-") == 0 && iconos::conocido(c.substr(2))) {
 +          id = c.substr(2);
 +        }
