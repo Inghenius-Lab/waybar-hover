@@ -1,5 +1,5 @@
 diff --git a/include/AModule.hpp b/include/AModule.hpp
-index 3fea52f6..379b8722 100644
+index 3fea52f..379b872 100644
 --- a/include/AModule.hpp
 +++ b/include/AModule.hpp
 @@ -113,6 +113,7 @@ class AModule : public IModule {
@@ -11,7 +11,7 @@ index 3fea52f6..379b8722 100644
        {std::make_pair(1, GdkEventType::GDK_BUTTON_PRESS), "on-click"},
        {std::make_pair(1, GdkEventType::GDK_BUTTON_RELEASE), "on-click-release"},
 diff --git a/include/modules/image.hpp b/include/modules/image.hpp
-index 5b4ac818..f4fa7057 100644
+index 5b4ac81..f4fa705 100644
 --- a/include/modules/image.hpp
 +++ b/include/modules/image.hpp
 @@ -30,6 +30,7 @@ class SingleImageStrategy : public IStrategy {
@@ -24,7 +24,7 @@ index 5b4ac818..f4fa7057 100644
   private:
 diff --git a/include/modules/ring.hpp b/include/modules/ring.hpp
 new file mode 100644
-index 00000000..0acfcd15
+index 0000000..0acfcd1
 --- /dev/null
 +++ b/include/modules/ring.hpp
 @@ -0,0 +1,122 @@
@@ -152,7 +152,7 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..db9a4bf0
+index 0000000..db9a4bf
 --- /dev/null
 +++ b/include/modules/wave.hpp
 @@ -0,0 +1,205 @@
@@ -363,16 +363,22 @@ index 00000000..db9a4bf0
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave_iconos.hpp b/include/modules/wave_iconos.hpp
 new file mode 100644
-index 00000000..7508f185
+index 0000000..c018f01
 --- /dev/null
 +++ b/include/modules/wave_iconos.hpp
-@@ -0,0 +1,1595 @@
+@@ -0,0 +1,2444 @@
 +#pragma once
-+// wave_iconos.hpp — iconos animados del hexagono (2026-11-19).
++// wave_iconos.hpp — iconos animados del hexagono (2026-11-24, v6).
 +// Port fiel a Cairo de ~/workspace/wakeword-elemental/logo/iconos-dibujo.js
-+// (iconos-hexagono-5.html: 14 de actividad + 9 variantes del logo). Lienzo logico de 64x64 con centro
-+// (32,32); todo son lineas, arcos y poligonos con alfa. Cabecera unica, sin
-+// estado global: dibujar(cr, id, t, w, h, paleta).
++// (iconos-hexagono-6.html: 12 de actividad + 11 variantes nuevas en 3D +
++// 9 variantes del logo). Lienzo logico de 64x64 con centro (32,32); todo
++// son lineas, arcos y poligonos con alfa. Cabecera unica, sin estado
++// global: dibujar(cr, id, t, w, h, paleta).
++//
++// v6: el motivo de actividad se dibuja AMPLIADO (tabla SOBRE) y SOBRESALE
++// del hexagono; el hexagono (radio RM=25) se pinta al final, troceado en
++// tramos cortos, saltandose los que caen bajo un trazo fuerte o una zona
++// opaca. La pluma (X::rec) apunta los trazos y las tapas mientras dibuja.
 +//
 +// Guardas: lienzos degenerados no dibujan; ningun std::clamp con limites
 +// calculados (ya causo rc=134 en drawConstelacion).
@@ -384,6 +390,7 @@ index 00000000..7508f185
 +#include <cmath>
 +#include <cstdio>
 +#include <functional>
++#include <map>
 +#include <string>
 +#include <vector>
 +
@@ -409,12 +416,46 @@ index 00000000..7508f185
 +  return v > 1.0 ? 1.0 : v;
 +}
 +
++// Envolvente convexa (cadena monotona); se define antes de X porque X::tapa la usa.
++inline std::vector<std::array<double, 2>> casco(std::vector<std::array<double, 2>> P);
++
 +struct X {
 +  cairo_t* c;
 +  Paleta pal;
 +  Col ss{1, 1, 1}, fs{1, 1, 1};
 +  double ga = 1.0, lw = 1.0;
 +  bool chico = false;  // lienzo pequeno (barra): se quitan aristas traseras
++  // --- v6: pluma (el motivo sobresale del hexagono) ---
++  using P2 = std::array<double, 2>;
++  bool rec = false;  // dentro del dibujo del motivo: se apunta para marco()
++  double pk = 1, pdx = 0, pdy = 0, pgw = 1;  // escala, desplazamiento y grosor de SOBRE
++  std::vector<std::array<double, 5>> segs{};  // trazos fuertes [x0,y0,x1,y1,mitad-grosor]
++  std::vector<std::vector<P2>> tapas{};        // zonas opacas (cascos)
++  std::vector<P2> pts{};                       // puntos de trazos fuertes y de rellenos
++  std::vector<std::vector<P2>> psubs{};        // subtrazados del trazado actual (pluma)
++  int psub = -1;                             // indice del subtrazado actual, -1 = ninguno
++  // mapa pluma: del espacio del motivo (antes de la escala SOBRE) al logico 64
++  P2 m2(double a, double b) const { return {C + pdx + pk * (a - C), C + pdy + pk * (b - C)}; }
++  double effW() const { return lw * (rec ? pgw : 1.0); }
++  // coordenadas de dispositivo (para la traza v6): la CTM ya lleva la escala del lienzo y la de SOBRE
++  P2 dev(double a, double b) const {
++    double x = a, y = b;
++    cairo_user_to_device(c, &x, &y);
++    return {x, y};
++  }
++  double devScale() const {
++    cairo_matrix_t m;
++    cairo_get_matrix(c, &m);
++    return std::hypot(m.xx, m.yx);
++  }
++  void tapa(const std::vector<P>& P) {
++    if (!rec) return;
++    std::vector<P2> m;
++    m.reserve(P.size());
++    for (const auto& p : P) m.push_back(m2(p[0], p[1]));
++    auto h = casco(m);
++    if (h.size() >= 3) tapas.push_back(h);
++  }
 +#ifdef ICONOS_TRAZA
 +  std::vector<double> tz_;
 +  void traza(const char* op, const Col& k, double ancho) {
@@ -423,36 +464,189 @@ index 00000000..7508f185
 +    std::printf("\n");
 +  }
 +#endif
++#ifdef ICONOS_TRAZA6
++// La traza v6 solo se registra y emite cuando el programa de pruebas la
++// activa (modo traza6); en estres y hoja no se registra nada.
++static inline bool traza6_activa = false;
++// Traza v6 (igual que herramientas-v6/traza.js): una linea JSON por
++  // operacion: ["S"|"F", "#rrggbb", alfa, ancho, cerrado, [x0,y0,...]]
++  // con coordenadas de dispositivo y arcos como polilineas.
++  struct Sub6 {
++    std::vector<P2> p;
++    int c = 0;
++  };
++  std::vector<Sub6> subs6{};
++  int sub6 = -1;
++  static std::string hexCol(const Col& k) {
++    char b[8];
++    std::snprintf(b, sizeof b, "#%02x%02x%02x", (int)std::lrint(k.r * 255), (int)std::lrint(k.g * 255),
++                  (int)std::lrint(k.b * 255));
++    return b;
++  }
++  void emit6(char op, const Col& k, double w) {
++    if (!traza6_activa) return;
++    const double a = lim01(ga);
++    if (!(a > 0.004)) return;
++    const double wd = w * devScale();
++    for (const auto& s : subs6) {
++      if (s.p.empty()) continue;
++      std::printf("[\"%c\",\"%s\",%.4f,%.3f,%d,[", op, hexCol(k).c_str(), a, wd, s.c);
++      bool primero = true;
++      for (const auto& q : s.p) {
++        std::printf("%s%.2f,%.2f", primero ? "" : ",", q[0], q[1]);
++        primero = false;
++      }
++      std::printf("]]\n");
++    }
++  }
++#endif
 +  void begin() {
 +    cairo_new_path(c);
++    psubs.clear();
++    psub = -1;
 +#ifdef ICONOS_TRAZA
 +    tz_.clear();
++#endif
++#ifdef ICONOS_TRAZA6
++    subs6.clear();
++    sub6 = -1;
 +#endif
 +  }
 +  void mt(double x, double y) {
 +    cairo_move_to(c, x, y);
++    if (rec) {
++      psubs.push_back({m2(x, y)});
++      psub = static_cast<int>(psubs.size()) - 1;
++    }
 +#ifdef ICONOS_TRAZA
 +    tz_.push_back(x);
 +    tz_.push_back(y);
++#endif
++#ifdef ICONOS_TRAZA6
++    if (traza6_activa) {
++      subs6.push_back({});
++      sub6 = static_cast<int>(subs6.size()) - 1;
++      subs6[sub6].p.push_back(dev(x, y));
++    }
 +#endif
 +  }
 +  void lt(double x, double y) {
 +    cairo_line_to(c, x, y);
++    if (rec) {
++      if (psub < 0) {
++        psubs.push_back({});
++        psub = static_cast<int>(psubs.size()) - 1;
++      }
++      psubs[psub].push_back(m2(x, y));
++    }
 +#ifdef ICONOS_TRAZA
 +    tz_.push_back(x);
 +    tz_.push_back(y);
 +#endif
++#ifdef ICONOS_TRAZA6
++    if (traza6_activa) {
++      if (sub6 < 0) {
++        subs6.push_back({});
++        sub6 = static_cast<int>(subs6.size()) - 1;
++      }
++      subs6[sub6].p.push_back(dev(x, y));
++    }
++#endif
 +  }
-+  void close() { cairo_close_path(c); }
++  void close() {
++    cairo_close_path(c);
++    if (rec && psub >= 0 && psubs[psub].size() > 2) psubs[psub].push_back(psubs[psub][0]);
++#ifdef ICONOS_TRAZA6
++    if (traza6_activa && sub6 >= 0) subs6[sub6].c = 1;
++#endif
++  }
++  // Arco: la pluma lo apunta como polilinea de 14 por vuelta; la traza v6
++  // como polilinea de 40 por vuelta. El dibujo es cairo_arc directo.
++  void arc(double cx, double cy, double r, double a0, double a1) {
++    const double span = std::abs(a1 - a0);
++    if (rec) {
++      const int n = std::max(3, static_cast<int>(std::ceil(span / TAU * 14)));
++      psubs.push_back({});
++      psub = static_cast<int>(psubs.size()) - 1;
++      for (int i = 0; i <= n; i++) {
++        const double a = a0 + (a1 - a0) * i / n;
++        psubs[psub].push_back(m2(cx + r * std::cos(a), cy + r * std::sin(a)));
++      }
++    }
++#ifdef ICONOS_TRAZA6
++    if (traza6_activa) {
++      const int n = std::max(6, static_cast<int>(std::ceil(span / TAU * 40)));
++      const int cc = span >= TAU - 1e-6 ? 1 : 0;
++      subs6.push_back({});
++      sub6 = static_cast<int>(subs6.size()) - 1;
++      subs6[sub6].c = cc;
++      for (int i = 0; i <= n - cc; i++) {
++        const double a = a0 + (a1 - a0) * i / n;
++        subs6[sub6].p.push_back(dev(cx + r * std::cos(a), cy + r * std::sin(a)));
++      }
++    }
++#endif
++#ifdef ICONOS_TRAZA
++    tz_ = {cx, cy, r};
++#endif
++    cairo_arc(c, cx, cy, r, a0, a1);
++  }
++  // Elipse: la pluma la apunta con 15 puntos y la traza v6 con 40 (rot se ignora, como en JS).
++  void ellipse(double cx, double cy, double rx, double ry, double rot, double a0, double a1) {
++    if (rec) {
++      psubs.push_back({});
++      psub = static_cast<int>(psubs.size()) - 1;
++      for (int i = 0; i <= 14; i++) {
++        const double a = a0 + (a1 - a0) * i / 14;
++        psubs[psub].push_back(m2(cx + rx * std::cos(a), cy + ry * std::sin(a)));
++      }
++    }
++#ifdef ICONOS_TRAZA6
++    if (traza6_activa) {
++      subs6.push_back({});
++      sub6 = static_cast<int>(subs6.size()) - 1;
++      subs6[sub6].c = 1;
++      for (int i = 0; i < 40; i++) {
++        const double a = a0 + (a1 - a0) * i / 40;
++        subs6[sub6].p.push_back(dev(cx + rx * std::cos(a), cy + ry * std::sin(a)));
++      }
++    }
++#endif
++    cairo_save(c);
++    cairo_translate(c, cx, cy);
++    cairo_rotate(c, rot);
++    cairo_scale(c, rx > 0.01 ? rx : 0.01, ry > 0.01 ? ry : 0.01);
++    cairo_arc(c, 0, 0, 1, a0, a1);
++    cairo_restore(c);
++  }
 +  void stroke() {
++    if (rec && ga >= .4) {
++      const double hw = lw * pgw * pk / 2;
++      for (const auto& s : psubs) {
++        for (size_t i = 0; i + 1 < s.size(); i++)
++          segs.push_back({s[i][0], s[i][1], s[i + 1][0], s[i + 1][1], hw});
++        for (const auto& p : s) pts.push_back(p);
++      }
++    }
++#ifdef ICONOS_TRAZA6
++    emit6('S', ss, effW());
++#endif
 +#ifdef ICONOS_TRAZA
 +    traza("S", ss, lw);
 +#endif
 +    cairo_set_source_rgba(c, ss.r, ss.g, ss.b, lim01(ga));
-+    cairo_set_line_width(c, lw > 0.05 ? lw : 0.05);
++    const double w = effW();
++    cairo_set_line_width(c, w > 0.05 ? w : 0.05);
 +    cairo_stroke(c);
 +  }
 +  void fill() {
++    if (rec && ga >= .5) {
++      for (const auto& s : psubs)
++        for (const auto& p : s) pts.push_back(p);
++    }
++#ifdef ICONOS_TRAZA6
++    emit6('F', fs, 0);
++#endif
 +#ifdef ICONOS_TRAZA
 +    traza("F", fs, 0);
 +#endif
@@ -513,10 +707,7 @@ index 00000000..7508f185
 +}
 +inline void circ(X& x, double cx, double cy, double r, bool fill = false) {
 +  x.begin();
-+  cairo_arc(x.c, cx, cy, r > 0.01 ? r : 0.01, 0, TAU);
-+#ifdef ICONOS_TRAZA
-+  x.tz_ = {cx, cy, r > 0.01 ? r : 0.01};
-+#endif
++  x.arc(cx, cy, r > 0.01 ? r : 0.01, 0, TAU);
 +  if (fill) {
 +    x.fill();
 +  } else {
@@ -1005,7 +1196,9 @@ index 00000000..7508f185
 +}
 +
 +// Solido cualquiera girando (para la transmutacion por los cinco elementos).
-+inline void alambre(X& x, const Solido& So, double sc, double ay, double ax, double al, const Col& col) {
++// re: radio de la esferita (v6).
++inline void alambre(X& x, const Solido& So, double sc, double ay, double ax, double al, const Col& col,
++                    double re = 3.2) {
 +  if (!(al >= .02) || !(sc > 0.01)) return;
 +  const double rad = sc;
 +  std::vector<P> Pv;
@@ -1020,7 +1213,7 @@ index 00000000..7508f185
 +    ss.push_back({pa, pb, z < -1 ? x.pal.azul : x.pal.verde, z < -1 ? 1.5 : 2.3,
 +                  al * aZ(z, rad) * (z < -1 ? (x.chico ? .2 : .65) : 1)});
 +  }
-+  trazos(x, ss, [&] { esferita(x, 3.2, al, col); });
++  trazos(x, ss, [&] { esferita(x, re, al, col); });
 +}
 +
 +inline void destello(X& x, double f, double g) {
@@ -1470,16 +1663,427 @@ index 00000000..7508f185
 +  }
 +}
 +
-+inline void i_escuchando(X& x, double t) {
++// ── v6: EL MOTIVO SOBRESALE DEL HEXAGONO ──
++// En los iconos de actividad el hexagono pasa a ser la base (radio RM, mas
++// pequeno que el del logo) y el motivo se dibuja mas grande, rebasandolo.
++// Donde el motivo cruza el contorno, el hexagono se interrumpe (un pequeno
++// corte alrededor del trazo) para que se lea por delante. Todo sigue siendo
++// lineas, arcos y poligonos:
++// 1) el motivo se pinta a traves de la pluma (X::rec), que ademas APUNTA los
++//    trazos fuertes (alfa >= .4) y las zonas opacas (tapa);
++// 2) marco() pinta al final el hexagono troceado en tramos cortos,
++//    saltandose los que caen bajo un trazo o una tapa.
++constexpr double RM = 25.0, HALO = 2.3;
++// Iconos ya existentes: [escala, dx, dy, factor de grosor, casco = el
++// hexagono se corta bajo toda la silueta]. Los nuevos (v6) no estan: usan [1,0,0,1].
++struct Sobre {
++  double k, dx, dy, gw;
++  bool casco = false;
++};
++inline const Sobre& sobre(const std::string& id) {
++  static const Sobre DEF{1, 0, 0, 1, false};
++  static const std::map<std::string, Sobre> T = {
++      {"pensando", {1.7, 0, 1.5, .74, false}}, {"cerebro", {1.46, 0, 1.5, .8, true}},
++      {"ejecutando", {1.66, 0, 0, .76, true}}, {"investigando", {1.5, 0, 0, .84, false}},
++      {"esfera", {1.45, 0, 0, .84, false}},    {"leyendo", {1.8, 0, .5, .68, true}},
++      {"editando", {1.4, -3, -1, .9, false}},  {"creando", {1.4, 1, -1, .86, true}},
++      {"creando-2", {1.26, -3.5, 0, .95, false}}, {"error", {1.66, 0, -2.4, .76, true}},
++      {"listo", {1.78, 0, 0, .72, false}},     {"buscando", {1, 0, 0, 1, true}},
++  };
++  const auto it = T.find(id);
++  return it == T.end() ? DEF : it->second;
++}
++
++inline std::vector<std::array<double, 2>> casco(std::vector<std::array<double, 2>> P) {
++  std::vector<std::array<double, 2>> p = P;
++  std::sort(p.begin(), p.end(), [](const std::array<double, 2>& a, const std::array<double, 2>& b) {
++    return a[0] < b[0] || (a[0] == b[0] && a[1] < b[1]);
++  });
++  auto cr = [](const std::array<double, 2>& o, const std::array<double, 2>& a, const std::array<double, 2>& b) {
++    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
++  };
++  std::vector<std::array<double, 2>> h;
++  for (const auto& q : p) {
++    while (h.size() >= 2 && cr(h[h.size() - 2], h[h.size() - 1], q) <= 0) h.pop_back();
++    h.push_back(q);
++  }
++  const size_t n = h.size() + 1;
++  for (int i = static_cast<int>(p.size()) - 2; i >= 0; i--) {
++    const auto& q = p[i];
++    while (h.size() >= n && cr(h[h.size() - 2], h[h.size() - 1], q) <= 0) h.pop_back();
++    h.push_back(q);
++  }
++  h.pop_back();
++  return h;
++}
++
++// Hexagono troceado (radio RM): se pinta al final del motivo, saltandose
++// los tramos que caen bajo un trazo fuerte o una zona opaca.
++inline void marco(X& x, const Col& col, bool modoCasco) {
++  std::vector<std::vector<X::P2>> tapas = x.tapas;
++  if (modoCasco && x.pts.size() >= 3) {
++    auto h = casco(x.pts);
++    if (h.size() >= 3) tapas.push_back(h);
++  }
++  auto fuera = [&](double px, double py) -> bool {
++    for (const auto& s : x.segs) {
++      const double ex = s[2] - s[0], ey = s[3] - s[1], l2 = ex * ex + ey * ey;
++      double u = 0;
++      if (l2 > 1e-9) {
++        u = ((px - s[0]) * ex + (py - s[1]) * ey) / l2;
++        u = u < 0 ? 0 : (u > 1 ? 1 : u);
++      }
++      if (std::hypot(px - s[0] - u * ex, py - s[1] - u * ey) < s[4] + HALO) return false;
++    }
++    for (const auto& h : tapas) {
++      double d = -1e9;
++      const size_t n = h.size();
++      for (size_t i = 0; i < n; i++) {
++        const auto& a = h[i];
++        const auto& b = h[(i + 1) % n];
++        const double ex = b[0] - a[0], ey = b[1] - a[1];
++        const double l = std::hypot(ex, ey);
++        d = std::max(d, ((px - a[0]) * ey - (py - a[1]) * ex) / (l > 0 ? l : 1.0));
++      }
++      if (d < HALO) return false;
++    }
++    return true;
++  };
++  x.ss = col;
++  x.lw = 3;
 +  x.ga = 1;
-+  circ(x, C, C, 3 + .9 * std::sin(t * 6), true);
-+  x.lw = 2;
-+  for (int i = 0; i < 3; i++) {
-+    const double p = std::fmod(t * .7 + i / 3.0, 1.0);
-+    x.ga = 1 - p;
-+    circ(x, C, C, 4 + p * 15);
++  const int N = 22;
++  bool abierto = false;
++  for (int i = 0; i < 6; i++) {
++    const double a0 = -PI / 2 + i * TAU / 6, a1 = a0 + TAU / 6;
++    const double x0 = C + RM * std::cos(a0), y0 = C + RM * std::sin(a0);
++    const double x1 = C + RM * std::cos(a1), y1 = C + RM * std::sin(a1);
++    for (int j = 0; j < N; j++) {
++      const double ax = mez(x0, x1, j / (double)N), ay = mez(y0, y1, j / (double)N);
++      const double bx = mez(x0, x1, (j + 1) / (double)N), by = mez(y0, y1, (j + 1) / (double)N);
++      if (fuera((ax + bx) / 2, (ay + by) / 2)) {
++        if (!abierto) {
++          x.begin();
++          x.mt(ax, ay);
++          abierto = true;
++        }
++        x.lt(bx, by);
++      } else if (abierto) {
++        x.stroke();
++        abierto = false;
++      }
++    }
++  }
++  if (abierto) x.stroke();
++}
++
++// «Volumen» de quien habla, 0..1.
++inline double voz(double t) {
++  return std::min(1.0, .12 + std::abs(std::sin(t * 4.3)) * (.62 + .38 * std::sin(t * 1.9 + .7)));
++}
++// Polilinea con alfa propio (sin moveTo inicial, como en JS).
++inline void tira(X& x, const std::vector<P>& P, double al, bool cerrar = false) {
++  if (!(al >= .02) || P.size() < 2) return;
++  x.ga = std::min(1.0, al);
++  x.begin();
++  for (const auto& p : P) x.lt(p[0], p[1]);
++  if (cerrar) x.close();
++  x.stroke();
++}
++// Zona opaca: el hexagono no se ve a traves (solo con la pluma activa).
++inline void tapar(X& x, const std::vector<P>& P) {
++  if (x.rec) x.tapa(P);
++}
++
++// Caja 3D (centro c, semilados h) pasada por T: caras vistas rellenas,
++// aristas vistas fuertes, ocultas tenues.
++inline const std::array<P, 8>& cajaV() {
++  static const std::array<P, 8> V = [] {
++    std::array<P, 8> v;
++    int i = 0;
++    for (double a : {1.0, -1.0})
++      for (double b : {1.0, -1.0})
++        for (double c : {1.0, -1.0}) v[i++] = {a, b, c};
++    return v;
++  }();
++  return V;
++}
++inline const std::array<std::array<int, 4>, 6>& cajaC() {
++  static const std::array<std::array<int, 4>, 6> C = {
++      {{0, 1, 3, 2}, {4, 6, 7, 5}, {0, 4, 5, 1}, {2, 3, 7, 6}, {0, 2, 6, 4}, {1, 5, 7, 3}}};
++  return C;
++}
++inline const std::array<int, 6>& cajaO() {
++  static const std::array<int, 6> O = [] {
++    std::array<int, 6> o;
++    const auto& V = cajaV();
++    const auto& C = cajaC();
++    for (int n = 0; n < 6; n++) {
++      const auto& f = C[n];
++      const auto& a = V[f[0]];
++      const auto& b = V[f[1]];
++      const auto& c = V[f[2]];
++      const double e[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
++      const double g[3] = {c[0] - b[0], c[1] - b[1], c[2] - b[2]};
++      const double nn[3] = {e[1] * g[2] - e[2] * g[1], e[2] * g[0] - e[0] * g[2], e[0] * g[1] - e[1] * g[0]};
++      double m[3] = {0, 0, 0};
++      for (int k = 0; k < 3; k++) {
++        double s = 0;
++        for (int idx : f) s += V[idx][k];
++        m[k] = s;
++      }
++      o[n] = nn[0] * m[0] + nn[1] * m[1] + nn[2] * m[2] > 0 ? 1 : -1;
++    }
++    return o;
++  }();
++  return O;
++}
++inline void caja(X& x, const P& c, const P& h, const Tr& T, double w, double alOculta, double alCara) {
++  const auto& V = cajaV();
++  const auto& CC = cajaC();
++  const auto& OO = cajaO();
++  std::vector<P> Pv;
++  Pv.reserve(8);
++  for (const auto& s : V) Pv.push_back(T({c[0] + s[0] * h[0], c[1] + s[1] * h[1], c[2] + s[2] * h[2]}));
++  std::array<bool, 6> vis{};
++  std::map<int, int> cuenta;  // claves enteras: el for..in de JS las recorre en orden ascendente
++  for (int n = 0; n < 6; n++) {
++    const auto& f = CC[n];
++    double ar = 0;
++    for (int i = 0; i < 4; i++) {
++      const P& a = Pv[f[i]];
++      const P& b = Pv[f[(i + 1) % 4]];
++      ar += a[0] * b[1] - b[0] * a[1];
++    }
++    const bool v = ar * OO[n] > 0;
++    vis[n] = v;
++    for (int i = 0; i < 4; i++) {
++      const int a = f[i], b = f[(i + 1) % 4];
++      const int k = std::min(a, b) * 8 + std::max(a, b);
++      cuenta[k] += v ? 1 : 0;
++    }
++  }
++  x.lw = w * .6;
++  for (const auto& kv : cuenta) {
++    if (kv.second == 0 && alOculta > .02) tira(x, {Pv[kv.first >> 3], Pv[kv.first & 7]}, alOculta);
++  }
++  for (int n = 0; n < 6; n++) {
++    if (vis[n]) {
++      std::vector<P> f;
++      for (int i : CC[n]) f.push_back(Pv[i]);
++      relleno(x, f, alCara);
++    }
++  }
++  x.lw = w;
++  for (const auto& kv : cuenta) {
++    if (kv.second) tira(x, {Pv[kv.first >> 3], Pv[kv.first & 7]}, 1);
++  }
++  tapar(x, Pv);
++  x.ga = 1;
++}
++
++// Alfabeto de trazos (rejilla 4 x 6, y hacia abajo): latinas, griegas,
++// cirilicas y katakana, solo con polilineas.
++using Glifo = std::vector<std::vector<std::array<double, 2>>>;
++inline const std::vector<Glifo>& glifos() {
++  static const std::vector<Glifo> G = {
++      {{{0, 6}, {2, 0}, {4, 6}}, {{.8, 4}, {3.2, 4}}},                                     // A
++      {{{4, 0}, {0, 0}, {0, 6}, {4, 6}}, {{0, 3}, {3, 3}}},                                // E
++      {{{0, 0}, {0, 6}}, {{4, 0}, {0, 3.4}, {4, 6}}},                                      // K
++      {{{0, 6}, {0, 0}, {2, 3.5}, {4, 0}, {4, 6}}},                                        // M
++      {{{0, 6}, {0, 0}, {4, 6}, {4, 0}}},                                                  // N
++      {{{0, 6}, {0, 0}, {3.2, 0}, {4, 1}, {4, 2.1}, {3.2, 3}, {0, 3}}, {{2, 3}, {4, 6}}},  // R
++      {{{4, .9}, {3.1, 0}, {.9, 0}, {0, .9}, {0, 2.1}, {.9, 3}, {3.1, 3}, {4, 3.9}, {4, 5.1}, {3.1, 6}, {.9, 6}, {0, 5.1}}},  // S
++      {{{0, 0}, {4, 0}, {0, 6}, {4, 6}}},                                                  // Z
++      {{{0, 0}, {4, 6}}, {{4, 0}, {0, 6}}},                                                // X
++      {{{0, 0}, {4, 0}}, {{2, 0}, {2, 6}}},                                                // T
++      {{{0, 0}, {0, 6}}, {{4, 0}, {4, 6}}, {{0, 3}, {4, 3}}},                              // H
++      {{{0, 0}, {0, 6}, {4, 6}}},                                                          // L
++      {{{4, 0}, {0, 0}, {2.4, 3}, {0, 6}, {4, 6}}},                                        // Σ
++      {{{0, 6}, {2, 0}, {4, 6}, {0, 6}}},                                                  // Δ
++      {{{0, 6}, {0, 0}, {4, 0}, {4, 6}}},                                                  // Π
++      {{{0, 6}, {1.4, 6}, {1.4, 4.7}, {.2, 3.4}, {.2, 1.3}, {1.2, 0}, {2.8, 0}, {3.8, 1.3}, {3.8, 3.4}, {2.6, 4.7}, {2.6, 6}, {4, 6}}},  // Ω
++      {{{0, 0}, {0, 2.4}, {1, 3.6}, {3, 3.6}, {4, 2.4}, {4, 0}}, {{2, 0}, {2, 6}}},        // Ψ
++      {{{.6, 0}, {1.5, 0}, {4, 6}}, {{2.4, 2.6}, {0, 6}}},                                 // λ
++      {{{0, 0}, {4, 6}}, {{4, 0}, {0, 6}}, {{2, 0}, {2, 6}}},                              // Ж
++      {{{4, 6}, {4, 0}, {.8, 0}, {0, 1}, {0, 2.1}, {.8, 3}, {4, 3}}, {{2, 3}, {0, 6}}},    // Я
++      {{{.4, .6}, {3.6, .6}}, {{2, .6}, {2, 5.4}}, {{0, 5.4}, {4, 5.4}}},                  // エ
++      {{{2, 0}, {2, 1.3}}, {{0, 3.1}, {0, 1.3}, {4, 1.3}, {4, 3}, {3, 5}, {1.3, 6}}},      // ウ
++      {{{0, 0}, {0, 6}, {4, 6}}, {{4, 1.5}, {0, 3.1}}},                                    // ヒ
++      {{{.4, .5}, {3.6, .5}, {0, 6}}, {{2.2, 3.3}, {4, 6}}},                               // ス
++      {{{1, 0}, {1, 6}}, {{1, 2.2}, {4, 4.1}}},                                            // ト
++      {{{0, .6}, {4, .6}}, {{0, 3}, {4, 3}}, {{0, 5.4}, {4, 5.4}}},                        // Ξ
++  };
++  return G;
++}
++inline int glN(int n) {
++  const int m = static_cast<int>(glifos().size());
++  return (((n * 11 + 3) % m) + m) % m;  // nunca repite dos seguidas
++}
++inline void glifo(X& x, int g, double u, const Tr& T, double z, double al) {
++  for (const auto& pl : glifos()[g]) {
++    std::vector<P> pts;
++    pts.reserve(pl.size());
++    for (const auto& p : pl) pts.push_back(T({(p[0] - 2) * u, (p[1] - 3) * u, z}));
++    tira(x, pts, al);
++  }
++}
++// Letra con volumen: cara de atras tenue, puentes y cara de delante fuerte.
++inline void glifoExtruido(X& x, int g, double u, const Tr& T, double gr, double wf, const Col& colF,
++                           const Col& colA, bool puentes) {
++  x.ss = colA;
++  x.lw = wf * .55;
++  glifo(x, g, u, T, -gr, .5);
++  if (puentes) {
++    x.lw = wf * .45;
++    for (const auto& pl : glifos()[g])
++      for (const auto& p : pl)
++        tira(x, {T({(p[0] - 2) * u, (p[1] - 3) * u, gr}), T({(p[0] - 2) * u, (p[1] - 3) * u, -gr})}, .5);
++  }
++  x.ss = colF;
++  x.lw = wf;
++  glifo(x, g, u, T, gr, 1);
++  x.ga = 1;
++}
++
++// Anillo 3D: se pintan las mitades de atras, luego medio() (el solido) y
++// luego las de delante. A = [[puntos, alfa, grosor, cerrado]...]
++struct Anillo3D {
++  std::vector<P> pts;
++  double al, w;
++  bool cer;
++};
++template <typename Medio>
++inline void conAnillos(X& x, const std::vector<Anillo3D>& A, Medio medio, const Col& colA, const Col& colF) {
++  for (int pasada = 0; pasada < 2; pasada++) {
++    for (const auto& a : A) {
++      const size_t n = a.pts.size();
++      const size_t m = a.cer ? n : n - 1;
++      for (size_t i = 0; i < m; i++) {
++        const P& pa = a.pts[i];
++        const P& pb = a.pts[(i + 1) % n];
++        const bool del = pa[2] + pb[2] >= 0;
++        if (del != (pasada == 1)) continue;
++        x.ss = del ? colF : colA;
++        x.lw = del ? a.w : a.w * .7;
++        tira(x, {pa, pb}, del ? a.al : a.al * (x.chico ? .3 : .45));
++      }
++    }
++    if (pasada == 0) {
++      x.ga = 1;
++      medio();
++    }
 +  }
 +  x.ga = 1;
++  x.ambos(x.pal.verde);
++}
++
++// v6 · ESCUCHANDO en 3D (modo voz).
++// A: icosaedro abierto que inhala: los anillos 3D vienen de fuera y entran en la esferita.
++inline void i_escuchando_a(X& x, double t) {
++  auto T = [&](const P& p) { return pr(rX(rY(p, .3 * std::sin(t * .6)), x.chico ? .98 : 1.13)); };
++  std::vector<Anillo3D> A;
++  const int n = x.chico ? 2 : 3;
++  double pul = 0;
++  for (int i = 0; i < n; i++) {
++    const double p = std::fmod(t * .5 + i / (double)n, 1.0);
++    pul = std::max(pul, std::max(std::exp(-(1 - p) * 7), std::exp(-p * 9)));
++    A.push_back({anillo(30 - (x.chico ? 16 : 19.5) * p, x.chico ? 18 : 28, T),
++                 std::min(1.0, p * 4) * std::min(1.0, (1 - p) * 4), (x.chico ? 2.3 : 1.6) + .9 * p, true});
++  }
++  conAnillos(x, A,
++             [&] {
++               alambre(x, x.chico ? octaedro() : icosaedro().s, 13.5 - 1.3 * pul, -t * .7, .3, 1, x.pal.verde,
++                       3.2 + 2.2 * pul);
++             },
++             x.pal.azul, x.pal.verde);
++}
++// B: parabola 3D que recibe: la senal baja en anillos hasta el foco.
++inline void i_escuchando_b(X& x, double t) {
++  const double gy = .72 + .14 * std::sin(t * .7), gx = .5 + .06 * std::sin(t * 1.1);
++  auto T = [&](const P& p) { return pr(rX(rY(p, gy), gx), -7, 8); };
++  const double Rd = 17, dp = 7, fz = 10.5;
++  auto bol = [&](double r, double a) {
++    return P{r * std::cos(a), r * std::sin(a), -dp * (1 - r * r / (Rd * Rd))};
++  };
++  x.ss = x.pal.azul;
++  x.lw = 1.3;
++  if (!x.chico) {
++    for (int i = 0; i < 6; i++) {
++      const double a = i * TAU / 6;
++      std::vector<P> pts;
++      for (double f : {0.0, .35, .7, 1.0}) pts.push_back(T(bol(Rd * f, a)));
++      tira(x, pts, .55);
++    }
++  }
++  x.lw = 1.5;
++  tira(x, anillo(Rd * .58, 20, [&](const P& p) { return T(bol(Rd * .58, std::atan2(p[1], p[0]))); }),
++       x.chico ? .45 : .7, true);
++  x.ss = x.pal.verde;
++  x.lw = 2.5;
++  const auto borde = anillo(Rd, 26, [&](const P& p) { return T({p[0], p[1], 0}); });
++  tira(x, borde, 1, true);
++  tapar(x, borde);
++  x.lw = 1.5;
++  for (int i = 0; i < 3; i++) {
++    const double a = PI / 2 + i * TAU / 3;
++    tira(x, {T({Rd * std::cos(a), Rd * std::sin(a), 0}), T({0, 0, fz})}, .85);
++  }
++  x.lw = 2.2;
++  tira(x, {T({0, 0, -dp}), T({0, 13, -dp - 9})}, .9);  // soporte
++  for (int i = 0; i < 3; i++) {
++    const double p = std::fmod(t * .55 + i / 3.0, 1.0), d = fz + 25 * (1 - p);
++    x.lw = 2.4 - 1 * (1 - p);
++    tira(x, anillo(2.5 + 9.5 * (1 - p), x.chico ? 14 : 20, [&](const P& q) { return T({q[0], q[1], d}); }),
++         std::min(1.0, p * 5) * std::min(1.0, (1 - p) * 6), true);
++  }
++  const P f = T({0, 0, fz});
++  x.ga = 1;
++  x.fs = x.pal.blanco;
++  circ(x, f[0], f[1], 2.3 + .8 * std::abs(std::sin(t * 3.4)), true);
++  x.fs = x.pal.verde;
++  x.ga = 1;
++}
++// C: vortice: hexagonos 3D que vienen de fuera y caen girando en la esferita.
++inline void i_escuchando_c(X& x, double t) {
++  auto T = [&](const P& p) { return pr(rX(rY(p, .38 * std::sin(t * .6)), .3 + .1 * std::sin(t * .9))); };
++  const int n = x.chico ? 3 : 4;
++  struct Hex {
++    double z;
++    std::vector<P> pts;
++    double al, w, p;
++  };
++  std::vector<Hex> L;
++  double pul = 0;
++  for (int i = 0; i < n; i++) {
++    const double p = std::fmod(t * .42 + i / (double)n, 1.0);
++    const double r = 4.5 + 23.5 * std::pow(1 - p, 1.25), z = 15 - 37 * p, g = p * 1.3;
++    std::vector<P> P;
++    for (int j = 0; j < 6; j++) {
++      const double a = -PI / 2 + g + j * TAU / 6;
++      P.push_back(T({r * std::cos(a), r * std::sin(a), z}));
++    }
++    pul = std::max(pul, std::exp(-(1 - p) * 8));
++    L.push_back({z, P, std::min(1.0, p * 5) * std::min(1.0, (1 - p) * 3.5), 1.3 + 1.5 * (1 - p), p});
++  }
++  std::stable_sort(L.begin(), L.end(), [](const Hex& a, const Hex& b) { return a.z < b.z; });
++  bool hecho = false;
++  auto bola = [&] {
++    if (!hecho) {
++      hecho = true;
++      x.ga = 1;
++      esferita(x, 3.2 + 2.2 * pul, 1, x.pal.verde);
++    }
++  };
++  for (const auto& e : L) {
++    if (e.z > -2) bola();
++    x.ss = e.p > .55 ? x.pal.azul : x.pal.verde;
++    x.lw = e.w;
++    tira(x, e.pts, e.al, true);
++  }
++  bola();
++  x.ga = 1;
++  x.ss = x.pal.verde;
 +}
 +
 +inline void i_pensando(X& x, double t) {
@@ -1511,11 +2115,7 @@ index 00000000..7508f185
 +  const double W = std::sqrt(100 * std::cos(gy) * std::cos(gy) + 196 * std::sin(gy) * std::sin(gy));
 +  x.ga = .13;
 +  x.begin();
-+  cairo_save(x.c);
-+  cairo_translate(x.c, C, C - 2.5);
-+  cairo_scale(x.c, std::max(W * E, 0.01), 9.4 * E);
-+  cairo_arc(x.c, 0, 0, 1, 0, TAU);
-+  cairo_restore(x.c);
++  x.ellipse(C, C - 2.5, W * E, 9.4 * E, 0, 0, TAU);
 +  x.fill();
 +  struct Pz {
 +    P a, b;
@@ -1573,11 +2173,21 @@ index 00000000..7508f185
 +  for (const auto& e : gs) engranaje(x, e.ox, e.oy, e.r, e.n, e.ang, T);
 +}
 +
++// v6 · BUSCANDO: lupa con el globo dentro (el mango sale del hexagono).
 +inline void i_buscando(X& x, double t) {
-+  const double r = 15.5;
-+  auto T = [&](const P& p) { return pr(rZ(rX(rY(p, t * .8), -.32), .36)); };
++  const double ox = -4.5 + 1.6 * std::sin(t * .9), oy = -4.5 + 1.3 * std::cos(t * .9), r = 16.4;
++  auto T = [&](const P& p) { return pr(rZ(rX(rY(p, t * .8), -.32), .36), ox, oy); };
++  const double m0 = (r * 1.07 + 1.2) * std::sqrt(0.5);
++  x.lw = 5.4;
++  x.ga = 1;
++  linea(x, C + ox + m0 + 2, C + oy + m0 + 2, C + 27, C + 27);
++  x.ss = x.pal.blanco;
++  x.lw = 1.2;
++  x.ga = .7;
++  linea(x, C + ox + m0 + 3.6, C + oy + m0 + 2, C + 27.2, C + 25.6);
++  x.ss = x.pal.verde;
 +  x.ga = .12;
-+  circ(x, C, C, r * 1.07, true);
++  circ(x, C + ox, C + oy, r * 1.07, true);
 +  std::vector<std::array<P, 24>> L;
 +  L.reserve(6);
 +  for (int m = 0; m < 3; m++) {
@@ -1603,7 +2213,7 @@ index 00000000..7508f185
 +    for (int i = 0; i < 24; i++) {
 +      const P& a = o[i];
 +      const P& b = o[(i + 1) % 24];
-+      x.ga = a[2] + b[2] > 0 ? .95 : .2;
++      x.ga = a[2] + b[2] > 0 ? .95 : (x.chico ? .12 : .2);
 +      x.begin();
 +      x.mt(a[0], a[1]);
 +      x.lt(b[0], b[1]);
@@ -1611,8 +2221,16 @@ index 00000000..7508f185
 +    }
 +  }
 +  x.ga = 1;
-+  x.lw = 2;
-+  circ(x, C, C, r * 1.07);
++  x.lw = 2.7;
++  circ(x, C + ox, C + oy, r * 1.07 + .6);
++  x.ss = x.pal.blanco;
++  x.lw = 1.3;
++  x.ga = .8;
++  x.begin();
++  x.arc(C + ox, C + oy, r * .82, PI * 1.08, PI * 1.42);
++  x.stroke();
++  x.ss = x.pal.verde;
++  x.ga = 1;
 +}
 +
 +inline void i_investigando(X& x, double t) {
@@ -1695,7 +2313,7 @@ index 00000000..7508f185
 +  x.lw = 1.3;
 +  x.ga = .75;
 +  x.begin();
-+  cairo_arc(x.c, C, C, r * .66, PI * 1.08, PI * 1.55);
++  x.arc(C, C, r * .66, PI * 1.08, PI * 1.55);
 +  x.stroke();
 +  x.lw = 1.5;
 +  for (const auto& d : del) {
@@ -1827,13 +2445,199 @@ index 00000000..7508f185
 +  x.ambos(base);
 +}
 +
-+inline void i_hablando(X& x, double t) {
-+  x.lw = 3;
-+  x.ga = 1;
-+  for (int i = 0; i < 5; i++) {
-+    const double h = 3 + (i == 2 ? 12 : (i % 2 ? 9 : 5)) * (.35 + .65 * std::abs(std::sin(t * 5 + i * 1.3)));
-+    linea(x, 18 + i * 7, C - h, 18 + i * 7, C + h);
++// v6 · HABLANDO en 3D.
++// A: cristal (octaedro) que late con la voz y suelta anillos 3D hacia fuera.
++inline void i_hablando_a(X& x, double t) {
++  const double v = voz(t);
++  auto T = [&](const P& p) { return pr(rX(rY(p, .3 * std::sin(t * .6)), x.chico ? -.98 : -1.13)); };
++  std::vector<Anillo3D> A;
++  const int n = x.chico ? 2 : 3;
++  for (int i = 0; i < n; i++) {
++    const double p = std::fmod(t * .55 + i / (double)n, 1.0);
++    A.push_back({anillo((x.chico ? 14 : 11.5) + (x.chico ? 16 : 18.5) * p, x.chico ? 18 : 28, T),
++                 std::min(1.0, p * 6) * std::pow(1 - p, .55), (x.chico ? 3.3 : 2.8) - .9 * p, true});
 +  }
++  conAnillos(x, A,
++             [&] {
++               alambre(x, octaedro(), (x.chico ? 11.5 : 10) + 3.4 * v, t * 1.3, .32, 1, x.pal.verde,
++                       2.6 + 1.3 * v);
++             },
++             x.pal.azul, x.pal.verde);
++}
++// B: ecualizador 3D: cinco prismas que suben y bajan con la voz.
++inline void i_hablando_b(X& x, double t) {
++  auto T = [&](const P& p) { return pr(rX(rY(p, .4 + .16 * std::sin(t * .8)), -.2)); };
++  std::vector<std::array<double, 2>> B;
++  for (int i = 0; i < 5; i++) {
++    const double h = 2.5 + (i == 2 ? 25 : (i % 2 ? 17 : 9.5)) * (.25 + .75 * std::abs(std::sin(t * 5 + i * 1.3)));
++    B.push_back({(i - 2) * 11.4, h});
++  }
++  std::stable_sort(B.begin(), B.end(), [&](const std::array<double, 2>& a, const std::array<double, 2>& b) {
++    return T({a[0], 0, 0})[2] < T({b[0], 0, 0})[2];
++  });
++  for (const auto& e : B)
++    caja(x, {e[0], 0, 0}, {2.8, e[1], 2.8}, T, x.chico ? 2.2 : 1.9, x.chico ? 0 : .25, .16);
++}
++// C: cristal con ondas de voz que salen por los dos lados, en un cono que se mece.
++inline void i_hablando_c(X& x, double t) {
++  const double v = voz(t);
++  auto T = [&](const P& p) { return pr(rY(rX(p, .55 * std::sin(t * 1.1)), .5 * std::sin(t * .7))); };
++  std::vector<Anillo3D> A;
++  for (int s : {1, -1})
++    for (int i = 0; i < 3; i++) {
++      const double p = std::fmod(t * .6 + i / 3.0 + (s > 0 ? 0 : .17), 1.0);
++      const double r = 13 + 16.5 * p;
++      std::vector<P> P;
++      for (int j = 0; j <= 8; j++) {
++        const double a = (s > 0 ? 0 : PI) + (j / 4.0 - 1) * .64;
++        P.push_back(T({r * std::cos(a), r * std::sin(a), 0}));
++      }
++      A.push_back({P, std::min(1.0, p * 5) * std::pow(1 - p, .5) * (.6 + .4 * v), 3 - p, false});
++    }
++  auto zm = [](const std::vector<P>& P) { return P[4][2]; };
++  x.lw = 2;
++  for (const auto& a : A)
++    if (zm(a.pts) < 0) {
++      x.ss = x.pal.azul;
++      x.lw = a.w * .8;
++      tira(x, a.pts, a.al * .7);
++    }
++  x.ga = 1;
++  alambre(x, octaedro(), 9.5 + 3 * v, t * 1.3, .32, 1, x.pal.verde, 2.6 + 1.2 * v);
++  for (const auto& a : A)
++    if (zm(a.pts) >= 0) {
++      x.ss = x.pal.verde;
++      x.lw = a.w;
++      tira(x, a.pts, a.al);
++    }
++  x.ga = 1;
++}
++
++// v6 · DICTADO (grabando) en 3D.
++// A: microfono 3D de aristas, girando, con ondas a los lados segun la voz.
++inline void i_dictado_a(X& x, double t) {
++  const double v = voz(t), lz = .1 * std::sin(t * .9), lx = -.28, ty = -3;
++  auto Tl = [&](const P& q) { return pr(rX(rZ(q, lz), lx), 0, ty); };
++  x.ss = x.pal.azul;
++  x.lw = 2.2;
++  std::vector<P> U;
++  for (int i = 0; i <= 10; i++) {
++    const double a = i * PI / 10;
++    U.push_back(Tl({11.8 * std::cos(a), -8.5 + 11.8 * std::sin(a), 0}));
++  }
++  tira(x, U, 1);
++  tira(x, {Tl({0, 3.3, 0}), Tl({0, 23, 0})}, 1);
++  x.lw = 2.4;
++  tira(x, anillo(10.5, 16, [&](const P& p) { return Tl({p[0], 23, p[1]}); }), 1, true);
++  util(x, 0, ty,
++       x.chico ? std::vector<Perfil>{{0, 1.5, x.pal.verde}, {2.2, 7.4, x.pal.verde}, {21, 7.4, x.pal.verde},
++                                     {24.5, 2.5, x.pal.verde}}
++               : std::vector<Perfil>{{0, 1.5, x.pal.verde}, {1.8, 6, x.pal.verde}, {4.5, 7.8, x.pal.verde},
++                                     {11, 7.8, x.pal.verde}, {17, 7.8, x.pal.verde}, {21.5, 6.6, x.pal.verde},
++                                     {24.5, 2.5, x.pal.verde}},
++       x.chico ? 6 : 8, t * 1.1, lz, lx);
++  x.ss = x.pal.blanco;
++  for (int s : {1, -1})
++    for (int i = 0; i < 2; i++) {
++      const double r = 16 + 6.5 * i;
++      std::vector<P> P;
++      for (int j = 0; j <= 6; j++) {
++        const double a = (s > 0 ? 0 : PI) + (j / 3.0 - 1) * .6;
++        P.push_back(Tl({r * std::cos(a), -13 + r * std::sin(a), 0}));
++      }
++      x.lw = 2.2 - .5 * i;
++      tira(x, P, lim01(v * 2 - i * .55));
++    }
++  x.ga = 1;
++  x.ambos(x.pal.verde);
++}
++// B: la voz como helice 3D: una onda que gira en espiral y atraviesa el
++// hexagono; el punto rosa es «grabando».
++inline void i_dictado_b(X& x, double t) {
++  const double v = .4 + .6 * voz(t);
++  const int N = x.chico ? 30 : 48;
++  const double vu = x.chico ? 4.6 : 6.4;
++  auto T = [&](const P& p) { return pr(rY(p, .25 * std::sin(t * .6))); };
++  std::vector<P> P;
++  for (int j = 0; j <= N; j++) {
++    const double s = j / (double)N * 2 - 1, A = 16 * std::pow(1 - s * s, .6) * v, th = s * vu - t * 4.4;
++    P.push_back(T({29.5 * s, A * std::cos(th), A * std::sin(th)}));
++  }
++  x.ss = x.pal.azul;
++  x.lw = 1.2;
++  tira(x, {T({-29.5, 0, 0}), T({29.5, 0, 0})}, .35);
++  x.lw = 1.6;
++  for (int j = 0; j < N; j++)
++    if (P[j][2] + P[j + 1][2] < 0) tira(x, {P[j], P[j + 1]}, x.chico ? .3 : .45);
++  x.ga = 1;
++  esferita(x, 3.1 + 1.6 * v, 1, x.pal.rosa);
++  x.ss = x.pal.verde;
++  x.lw = x.chico ? 2.9 : 2.5;
++  for (int j = 0; j < N; j++)
++    if (P[j][2] + P[j + 1][2] >= 0) tira(x, {P[j], P[j + 1]}, 1);
++  x.ga = 1;
++  x.fs = x.pal.verde;
++}
++
++// v6 · ESCRIBIENDO (transcribiendo el dictado): letras cambiantes en 3D.
++// A: una letra grande con volumen: gira media vuelta y al volver ya es otra.
++inline void i_escribiendo_a(X& x, double t) {
++  const double u = t * .95;
++  const int n = static_cast<int>(std::floor(u));
++  const double ang = PI * suave((u - n - .38) / .62), c = std::cos(ang), sg = c >= 0 ? 1 : -1;
++  const int cara = c >= 0 ? n : n + 1;
++  auto T = [&](const P& p) {
++    return pr(rX(rY({p[0] * sg, p[1], p[2] * sg}, ang), .1 * std::sin(t * .8)));
++  };
++  glifoExtruido(x, glN(cara), 8.3, T, x.chico ? 2.6 : 4.4, x.chico ? 3.6 : 3, x.pal.verde, x.pal.azul, !x.chico);
++}
++// B: tres letras en rodillos, como texto que se va escribiendo: cada una rueda y cambia a su ritmo.
++inline void i_escribiendo_b(X& x, double t) {
++  const double yaw = .3 * std::sin(t * .7);
++  for (int i = 0; i < 3; i++) {
++    const double u = t * 1.2 + i * .37;
++    const int n = static_cast<int>(std::floor(u));
++    const double ang = PI * suave((u - n - .34) / .66), c = std::cos(ang), sg = c >= 0 ? 1 : -1;
++    const int cara = c >= 0 ? n : n + 1;
++    auto T = [&](const P& p) {
++      P q = rX({p[0], p[1] * sg, p[2] * sg}, ang);
++      q[0] += (i - 1) * 20.5;
++      return pr(rY(q, yaw));
++    };
++    glifoExtruido(x, glN(cara * 3 + i * 5), x.chico ? 3.3 : 3.1, T, 1.6, x.chico ? 2.7 : 2.3,
++                  i == 1 ? x.pal.blanco : x.pal.verde, x.pal.azul, false);
++  }
++  x.ambos(x.pal.verde);
++}
++// C: cubo de letras: cada cara lleva una letra y la cambia cuando queda oculta.
++inline void i_escribiendo_c(X& x, double t) {
++  const double ay = t * 1.05, ax = -.5 + .1 * std::sin(t * .7), a = 15;
++  auto R3 = [&](const P& p) { return rX(rY(p, ay), ax); };
++  auto T = [&](const P& p) { return pr(R3(p)); };
++  x.ss = x.pal.azul;
++  caja(x, {0, 0, 0}, {a, a, a}, T, x.chico ? 2.1 : 1.9, x.chico ? 0 : .28, .1);
++  const P CARAS[5][2] = {{{0, 0, 1}, {1, 0, 0}},  {{1, 0, 0}, {0, 0, -1}}, {{0, 0, -1}, {-1, 0, 0}},
++                         {{-1, 0, 0}, {0, 0, 1}}, {{0, -1, 0}, {1, 0, 0}}};
++  x.lw = x.chico ? 2.8 : 2.4;
++  for (int f = 0; f < 5; f++) {
++    const P& nn = CARAS[f][0];
++    const P& uu = CARAS[f][1];
++    const double nz = R3(nn)[2];
++    if (nz < .12) continue;
++    const P vv = {nn[1] * uu[2] - nn[2] * uu[1], nn[2] * uu[0] - nn[0] * uu[2],
++                  nn[0] * uu[1] - nn[1] * uu[0]};  // v = n x u (hacia abajo en la cara)
++    const int g = f < 4 ? glN(f * 7 + 2 * static_cast<int>(std::floor((f * PI / 2 + ay + PI) / TAU)))
++                        : glN(40 + static_cast<int>(std::floor(t * .55)));
++    auto Tc = [&](const P& p) {
++      P q;
++      for (int k = 0; k < 3; k++) q[k] = nn[k] * a + uu[k] * p[0] + vv[k] * p[1];
++      return T(q);
++    };
++    x.ss = f == 4 ? x.pal.blanco : x.pal.verde;
++    glifo(x, g, 3.5, Tc, 0, lim01(nz * 2.2 - .2));
++  }
++  x.ga = 1;
++  x.ambos(x.pal.verde);
 +}
 +
 +inline void i_error(X& x, double t) {
@@ -1882,7 +2686,10 @@ index 00000000..7508f185
 +                                    "teseracto-c", "reposo",      "reposo-b",      "reposo-t",    "escuchando",
 +                                    "pensando",    "cerebro",     "ejecutando",    "buscando",    "investigando",
 +                                    "esfera",      "leyendo",     "editando",      "creando",     "creando-2",
-+                                    "hablando",    "error",       "listo"};
++                                    "hablando",    "error",       "listo",         "hablando-a",  "hablando-b",
++                                    "hablando-c",  "escuchando-a", "escuchando-b", "escuchando-c", "dictado",
++                                    "dictado-a",   "dictado-b",   "escribiendo",   "escribiendo-a", "escribiendo-b",
++                                    "escribiendo-c"};
 +  for (const char* s : IDS) {
 +    if (id == s) return true;
 +  }
@@ -1892,6 +2699,9 @@ index 00000000..7508f185
 +// Dibuja el icono `id` en el instante t (s desde que se puso) centrado en
 +// un lienzo de w x h. `abre` solo lo usan los reposos. El dibujo
 +// simplificado (bandera chico) se activa con el tamano REAL del lienzo.
++// v6: los logos (SIN_HEX) se dibujan directos, sin hexagono; los iconos de
++// actividad se dibujan ampliados por la pluma (tabla SOBRE) y el hexagono
++// troceado (RM=25) se pinta al final, con cortes bajo el motivo.
 +inline void dibujar(cairo_t* cr, const std::string& id, double t, double w, double h, const Paleta& pal,
 +                    double abre = 1.0) {
 +  if (cr == nullptr || !(w >= 8.0) || !(h >= 8.0) || !(w < 1e5) || !(h < 1e5) || !std::isfinite(t)) return;
@@ -1907,28 +2717,52 @@ index 00000000..7508f185
 +  x.chico = lado <= 48.0;
 +  const bool err = id == "error";
 +  const bool logo = esLogo(id) || !conocido(id);
-+  if (!logo) hex(x, err ? pal.rojo : pal.azul);
++  const double ab = lim01(abre);
++  if (logo) {
++    x.ambos(err ? pal.rojo : pal.verde);
++    x.ga = 1;
++    if (id == "logo-3d") {
++      i_logo3d(x, t);
++    } else if (id == "logo-3d-b") {
++      i_logo3d_b(x, t);
++    } else if (id == "transmutacion") {
++      i_transmutacion(x, t);
++    } else if (id == "teseracto-a") {
++      i_teseracto_a(x, t);
++    } else if (id == "teseracto-b") {
++      i_teseracto_b(x, t);
++    } else if (id == "teseracto-c") {
++      i_teseracto_c(x, t);
++    } else if (id == "reposo-t") {
++      i_reposo_t(x, t, ab);
++    } else if (id == "reposo-b") {
++      i_reposo_b(x, t, ab);
++    } else {
++      i_reposo(x, t, ab);
++    }
++    cairo_restore(cr);
++    return;
++  }
++  // Actividad: motivo ampliado por la pluma, hexagono troceado al final.
++  const Sobre& c = sobre(id);
++  x.pk = c.k;
++  x.pdx = c.dx;
++  x.pdy = c.dy;
++  x.pgw = c.gw;
++  x.rec = true;
++  cairo_save(cr);
++  cairo_translate(cr, C + c.dx, C + c.dy);
++  cairo_scale(cr, c.k, c.k);
++  cairo_translate(cr, -C, -C);
 +  x.ambos(err ? pal.rojo : pal.verde);
 +  x.ga = 1;
-+  const double ab = lim01(abre);
-+  if (id == "logo-3d") {
-+    i_logo3d(x, t);
-+  } else if (id == "logo-3d-b") {
-+    i_logo3d_b(x, t);
-+  } else if (id == "transmutacion") {
-+    i_transmutacion(x, t);
-+  } else if (id == "teseracto-a") {
-+    i_teseracto_a(x, t);
-+  } else if (id == "teseracto-b") {
-+    i_teseracto_b(x, t);
-+  } else if (id == "teseracto-c") {
-+    i_teseracto_c(x, t);
-+  } else if (id == "reposo-t") {
-+    i_reposo_t(x, t, ab);
-+  } else if (id == "reposo-b") {
-+    i_reposo_b(x, t, ab);
-+  } else if (id == "escuchando") {
-+    i_escuchando(x, t);
++  x.lw = 1;
++  if (id == "escuchando" || id == "escuchando-c") {
++    i_escuchando_c(x, t);
++  } else if (id == "escuchando-a") {
++    i_escuchando_a(x, t);
++  } else if (id == "escuchando-b") {
++    i_escuchando_b(x, t);
 +  } else if (id == "pensando") {
 +    i_pensando(x, t);
 +  } else if (id == "cerebro") {
@@ -1949,21 +2783,36 @@ index 00000000..7508f185
 +    i_creando(x, t);
 +  } else if (id == "creando-2") {
 +    i_creando2(x, t);
-+  } else if (id == "hablando") {
-+    i_hablando(x, t);
++  } else if (id == "hablando" || id == "hablando-b") {
++    i_hablando_b(x, t);
++  } else if (id == "hablando-a") {
++    i_hablando_a(x, t);
++  } else if (id == "hablando-c") {
++    i_hablando_c(x, t);
++  } else if (id == "dictado" || id == "dictado-b") {
++    i_dictado_b(x, t);
++  } else if (id == "dictado-a") {
++    i_dictado_a(x, t);
++  } else if (id == "escribiendo" || id == "escribiendo-a") {
++    i_escribiendo_a(x, t);
++  } else if (id == "escribiendo-b") {
++    i_escribiendo_b(x, t);
++  } else if (id == "escribiendo-c") {
++    i_escribiendo_c(x, t);
 +  } else if (id == "error") {
 +    i_error(x, t);
 +  } else if (id == "listo") {
 +    i_listo(x, t);
-+  } else {
-+    i_reposo(x, t, ab);
 +  }
++  cairo_restore(cr);
++  x.rec = false;
++  marco(x, err ? pal.rojo : pal.azul, c.casco);
 +  cairo_restore(cr);
 +}
 +
 +}  // namespace waybar::modules::iconos
 diff --git a/meson.build b/meson.build
-index a0c5b0d8..e5fe9eb6 100644
+index a0c5b0d..e5fe9eb 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -182,6 +182,8 @@ src_files = files(
@@ -1976,7 +2825,7 @@ index a0c5b0d8..e5fe9eb6 100644
      'src/modules/idle_inhibitor.cpp',
      'src/modules/image.cpp',
 diff --git a/src/AModule.cpp b/src/AModule.cpp
-index 65ffb433..b51f4511 100644
+index 65ffb43..b51f451 100644
 --- a/src/AModule.cpp
 +++ b/src/AModule.cpp
 @@ -102,6 +102,9 @@ AModule::~AModule() {
@@ -2090,7 +2939,7 @@ index 65ffb433..b51f4511 100644
  }
  
 diff --git a/src/factory.cpp b/src/factory.cpp
-index 86abb43d..82306b4f 100644
+index 86abb43..82306b4 100644
 --- a/src/factory.cpp
 +++ b/src/factory.cpp
 @@ -129,6 +129,8 @@
@@ -2116,7 +2965,7 @@ index 86abb43d..82306b4f 100644
        return new waybar::modules::CFFI(ref.substr(5), id, config_[name]);
      }
 diff --git a/src/modules/image.cpp b/src/modules/image.cpp
-index 8c8132d7..2d9d11aa 100644
+index 8c8132d..2d9d11a 100644
 --- a/src/modules/image.cpp
 +++ b/src/modules/image.cpp
 @@ -248,6 +248,18 @@ SingleImageStrategy::SingleImageStrategy(const std::string& id, const Json::Valu
@@ -2149,7 +2998,7 @@ index 8c8132d7..2d9d11aa 100644
      auto result = Config::tryExpandPath(path_, "");
 diff --git a/src/modules/ring.cpp b/src/modules/ring.cpp
 new file mode 100644
-index 00000000..ac01bfc2
+index 0000000..ac01bfc
 --- /dev/null
 +++ b/src/modules/ring.cpp
 @@ -0,0 +1,606 @@
@@ -2761,7 +3610,7 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..dce02e25
+index 0000000..dce02e2
 --- /dev/null
 +++ b/src/modules/wave.cpp
 @@ -0,0 +1,2259 @@
