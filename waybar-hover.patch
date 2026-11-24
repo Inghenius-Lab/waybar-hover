@@ -363,10 +363,10 @@ index 0000000..db9a4bf
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave_iconos.hpp b/include/modules/wave_iconos.hpp
 new file mode 100644
-index 0000000..c018f01
+index 0000000..7b65215
 --- /dev/null
 +++ b/include/modules/wave_iconos.hpp
-@@ -0,0 +1,2444 @@
+@@ -0,0 +1,2447 @@
 +#pragma once
 +// wave_iconos.hpp — iconos animados del hexagono (2026-11-24, v6).
 +// Port fiel a Cairo de ~/workspace/wakeword-elemental/logo/iconos-dibujo.js
@@ -1916,9 +1916,11 @@ index 0000000..c018f01
 +  };
 +  return G;
 +}
-+inline int glN(int n) {
-+  const int m = static_cast<int>(glifos().size());
-+  return (((n * 11 + 3) % m) + m) % m;  // nunca repite dos seguidas
++inline int glN(double n) {
++  const double m = static_cast<double>(glifos().size());
++  double r = std::fmod(n * 11 + 3, m);  // mismo reparto que en JS, sin desbordar int
++  if (r < 0) r += m;
++  return static_cast<int>(r);  // r en [0, 26)
 +}
 +inline void glifo(X& x, int g, double u, const Tr& T, double z, double al) {
 +  for (const auto& pl : glifos()[g]) {
@@ -2404,7 +2406,8 @@ index 0000000..c018f01
 +    x.fs = m.col;
 +    relleno(x, anillo(2.5, 10, [&](const P& p) { return T({p[0] + m.mx, p[1] + m.my, 1.2}); }), .95);
 +  }
-+  const int k = static_cast<int>(std::floor(t * .8)) % 4;
++  int k = static_cast<int>(std::fmod(std::floor(t * .8), 4.0));  // [0, 4) tambien con t < 0
++  if (k < 0) k += 4;
 +  const double sube = 4 * std::abs(std::sin(t * .8 * PI));
 +  const P b = T({ms[k].mx, ms[k].my, 1.2 + sube});
 +  util(x, b[0] - C, b[1] - C,
@@ -2583,9 +2586,9 @@ index 0000000..c018f01
 +// A: una letra grande con volumen: gira media vuelta y al volver ya es otra.
 +inline void i_escribiendo_a(X& x, double t) {
 +  const double u = t * .95;
-+  const int n = static_cast<int>(std::floor(u));
++  const double n = std::floor(u);
 +  const double ang = PI * suave((u - n - .38) / .62), c = std::cos(ang), sg = c >= 0 ? 1 : -1;
-+  const int cara = c >= 0 ? n : n + 1;
++  const double cara = c >= 0 ? n : n + 1;
 +  auto T = [&](const P& p) {
 +    return pr(rX(rY({p[0] * sg, p[1], p[2] * sg}, ang), .1 * std::sin(t * .8)));
 +  };
@@ -2596,9 +2599,9 @@ index 0000000..c018f01
 +  const double yaw = .3 * std::sin(t * .7);
 +  for (int i = 0; i < 3; i++) {
 +    const double u = t * 1.2 + i * .37;
-+    const int n = static_cast<int>(std::floor(u));
++    const double n = std::floor(u);
 +    const double ang = PI * suave((u - n - .34) / .66), c = std::cos(ang), sg = c >= 0 ? 1 : -1;
-+    const int cara = c >= 0 ? n : n + 1;
++    const double cara = c >= 0 ? n : n + 1;
 +    auto T = [&](const P& p) {
 +      P q = rX({p[0], p[1] * sg, p[2] * sg}, ang);
 +      q[0] += (i - 1) * 20.5;
@@ -2626,8 +2629,8 @@ index 0000000..c018f01
 +    if (nz < .12) continue;
 +    const P vv = {nn[1] * uu[2] - nn[2] * uu[1], nn[2] * uu[0] - nn[0] * uu[2],
 +                  nn[0] * uu[1] - nn[1] * uu[0]};  // v = n x u (hacia abajo en la cara)
-+    const int g = f < 4 ? glN(f * 7 + 2 * static_cast<int>(std::floor((f * PI / 2 + ay + PI) / TAU)))
-+                        : glN(40 + static_cast<int>(std::floor(t * .55)));
++    const int g = f < 4 ? glN(f * 7 + 2 * std::floor((f * PI / 2 + ay + PI) / TAU))
++                        : glN(40 + std::floor(t * .55));
 +    auto Tc = [&](const P& p) {
 +      P q;
 +      for (int k = 0; k < 3; k++) q[k] = nn[k] * a + uu[k] * p[0] + vv[k] * p[1];
