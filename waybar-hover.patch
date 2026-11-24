@@ -152,10 +152,10 @@ index 00000000..0acfcd15
 +}  // namespace waybar::modules
 diff --git a/include/modules/wave.hpp b/include/modules/wave.hpp
 new file mode 100644
-index 00000000..6c304521
+index 00000000..db9a4bf0
 --- /dev/null
 +++ b/include/modules/wave.hpp
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,205 @@
 +#pragma once
 +
 +#include <array>
@@ -188,6 +188,7 @@ index 00000000..6c304521
 +class WaveCanvas : public Gtk::DrawingArea {
 + public:
 +  WaveCanvas();
++  ~WaveCanvas() override;
 +  void setValues(const std::vector<double>& values);
 +  void setColor(const std::string& spec);
 +  void setGradient(const std::vector<std::string>& stops);
@@ -302,6 +303,10 @@ index 00000000..6c304521
 +  std::string color_{"waybar-accent"};
 +  std::vector<std::string> gradient_;
 +  double phase_ = 0.0;
++  // Conexion del tick de 33 ms: se guarda para desconectarla en el
++  // destructor; si queda huerfana, al recargar la barra dispara
++  // sobre memoria liberada (segfault verificado el 2026-11-23).
++  sigc::connection tick_conn_;
 +};
 +
 +class Wave : public AModule {
@@ -2756,10 +2761,10 @@ index 00000000..ac01bfc2
 +}  // namespace waybar::modules
 diff --git a/src/modules/wave.cpp b/src/modules/wave.cpp
 new file mode 100644
-index 00000000..efe43425
+index 00000000..dce02e25
 --- /dev/null
 +++ b/src/modules/wave.cpp
-@@ -0,0 +1,2252 @@
+@@ -0,0 +1,2259 @@
 +#include "modules/wave.hpp"
 +#include "modules/wave_iconos.hpp"
 +
@@ -2942,7 +2947,7 @@ index 00000000..efe43425
 +  // interpolation the user asked for: data arrives at ~30 fps in
 +  // bursts, the dots glide instead of jumping. Mic modes snap
 +  // (their own designs carry their own motion).
-+  Glib::signal_timeout().connect(
++  tick_conn_ = Glib::signal_timeout().connect(
 +      [this]() {
 +        ++tick_;
 +        phase_ = std::fmod(phase_ + 0.0033, 1.0);
@@ -3036,6 +3041,13 @@ index 00000000..efe43425
 +        return true;
 +      },
 +      33);
++}
++
++WaveCanvas::~WaveCanvas() {
++  // Cortar el tick ANTES de que se destruyan los miembros: al
++  // recargar la barra (SIGUSR2), el lienzo muere y un timeout
++  // huerfano seguiria escribiendo en values_/disp_ liberados.
++  tick_conn_.disconnect();
 +}
 +
 +void WaveCanvas::setColor(const std::string& spec) { color_ = spec; }
